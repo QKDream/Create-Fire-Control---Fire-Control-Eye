@@ -1,0 +1,29 @@
+{
+  "required": true,
+  "minVersion": "0.8.5",
+  "package": "com.qkdream.firecontrolcompat.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "ConnectedDisplayScanMixin",
+    "ConnectedDisplayAimReferenceMixin",
+    "ConnectedDisplayManualAimMixin",
+    "AutoDefenseGuidanceMixin",
+    "ControllerRadarScanMixin",
+    "ControllerFireAaMixin",
+    "ControllerTrackerAaMixin",
+    "AircraftFuseMixin",
+    "RadarContactTypesMixin",
+    "HellfireBindingMixin",
+    "HellfireAimReferenceMixin",
+    "OpticalLockCompatMixin"
+  ],
+  "client": [
+    "RadarHudLockLabelMixin",
+    "FireControlCompatRadarTwsMixin",
+    "ThirdPersonAimHudLockLabelMixin"
+  ],
+  "server": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

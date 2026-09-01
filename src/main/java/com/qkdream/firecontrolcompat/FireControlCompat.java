@@ -1,6 +1,8 @@
 package com.qkdream.firecontrolcompat;
 
 import com.qkdream.firecontrolcompat.network.ContactTypePayload;
+import com.qkdream.firecontrolcompat.network.MissileTrackPayload;
+import com.qkdream.firecontrolcompat.network.SeekerHudPayload;
 import org.slf4j.LoggerFactory;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -14,7 +16,11 @@ public final class FireControlCompat {
 
     public FireControlCompat(IEventBus modEventBus, ModContainer container) {
         ShaolibBridge.resolve();
+        CbcAutocannonPayloads.markerType();
+        BeamMissileRegistry.register(modEventBus);
         modEventBus.addListener(ContactTypePayload::register);
+        modEventBus.addListener(MissileTrackPayload::register);
+        modEventBus.addListener(SeekerHudPayload::register);
     }
 }
 

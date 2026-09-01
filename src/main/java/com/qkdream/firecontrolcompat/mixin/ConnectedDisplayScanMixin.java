@@ -12,7 +12,7 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 
 /**
  * Injects vestalihy / CBCMS / TAOV contacts into the connected display radar
- * right before {@code updateTrackedContacts} stores the scan result, so the
+ * right before {@code updateContacts} stores the scan result, so the
  * automatic missile defense reacts to them through the vanilla pipeline.
  */
 @Mixin(ConnectedDisplayBlockEntity.class)
@@ -28,7 +28,7 @@ public abstract class ConnectedDisplayScanMixin {
     public abstract Vec3 invokeRadarOrigin();
 
     @Invoker("updateTrackedContacts")
-    public abstract void invokeUpdateTrackedContacts(List<ConnectedDisplayBlockEntity.Contact> contacts, long now);
+    public abstract void invokeUpdateTrackedContacts(List<ConnectedDisplayBlockEntity.Contact> contacts, long time);
 
     @Redirect(
             method = "scan",
@@ -40,9 +40,9 @@ public abstract class ConnectedDisplayScanMixin {
     private void firecontrolcompat$redirectUpdateTrackedContacts(
             ConnectedDisplayBlockEntity instance,
             List<ConnectedDisplayBlockEntity.Contact> found,
-            long now
+            long time
     ) {
         CompatScanner.appendDisplayContacts(instance, found, this.invokeRadarOrigin(), this.radarRange, this.radarVelocity);
-        this.invokeUpdateTrackedContacts(found, now);
+        this.invokeUpdateTrackedContacts(found, time);
     }
 }

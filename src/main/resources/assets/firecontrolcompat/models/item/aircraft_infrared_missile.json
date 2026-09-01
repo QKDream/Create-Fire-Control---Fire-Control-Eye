@@ -1,0 +1,7 @@
+{
+  "parent": "mianbaos_modernwarfare:custom/jin_ju_chi_ge_dou_dao_dan_",
+  "textures": {
+    "0": "mianbaos_modernwarfare:block/jin_ju_chi_ge_dou_dao_dan_",
+    "particle": "mianbaos_modernwarfare:item/jin_ju_chi_ge_dou_dao_dan_"
+  }
+}

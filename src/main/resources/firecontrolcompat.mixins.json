@@ -5,7 +5,6 @@
   "compatibilityLevel": "JAVA_21",
   "mixins": [
     "ConnectedDisplayScanMixin",
-    "ConnectedDisplayAimReferenceMixin",
     "ConnectedDisplayManualAimMixin",
     "AutoDefenseGuidanceMixin",
     "ControllerRadarScanMixin",
@@ -14,16 +13,46 @@
     "AircraftFuseMixin",
     "RadarContactTypesMixin",
     "HellfireBindingMixin",
-    "HellfireAimReferenceMixin",
-    "OpticalLockCompatMixin"
+    "HellfireAirDefenseCompatMixin",
+    "MianbaoGuidedMissileAdoptMixin",
+    "OpticalLockCompatMixin",
+    "TaovCbcAmmoMappingMixin",
+    "TaovGunInventoryValidationMixin",
+    "TaovGunBindingMixin",
+    "TaovGunCannonMountMixin",
+    "TaovGunBallisticsMixin",
+    "TaovGunAimMixin",
+    "AaLauncherLoadMixin",
+    "AaLauncherSecondLoadMixin",
+    "AaLauncherFireMixin",
+    "AaLauncherSecondFireMixin",
+    "AtgmLauncherLoadMixin",
+    "AtgmLauncherErxingLoadMixin",
+    "AtgmLauncherSanxingLoadMixin",
+    "AtgmLauncherSixingLoadMixin",
+    "AtgmLauncherFireMixin",
+    "AtgmLauncherErxingFireMixin",
+    "AtgmLauncherSanxingFireMixin",
+    "AtgmLauncherSixingFireMixin",
+    "MixedLauncherLoadMixin",
+    "MixedLauncherFireMixin",
+    "CloseMissileRackFireMixin",
+    "AircraftIrFreeFireMixin",
+    "AircraftWeaponNameMixin",
+    "RackLoadMixin",
   ],
   "client": [
     "RadarHudLockLabelMixin",
     "FireControlCompatRadarTwsMixin",
-    "ThirdPersonAimHudLockLabelMixin"
+    "ThirdPersonAimHudLockLabelMixin",
+    "FireControlTrailPathMixin"
   ],
   "server": [],
   "injectors": {
     "defaultRequire": 1
   }
 }
+
+
+
+

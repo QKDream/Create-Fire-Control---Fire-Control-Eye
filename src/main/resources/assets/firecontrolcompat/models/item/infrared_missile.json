@@ -1,0 +1,7 @@
+{
+  "parent": "mianbaos_modernwarfare:custom/dan_bing_fang_kong_dao_dan_",
+  "textures": {
+    "0": "mianbaos_modernwarfare:block/dan_bing_fang_kong_dao_dan_",
+    "particle": "mianbaos_modernwarfare:item/dan_bing_fang_kong_dao_dan_"
+  }
+}

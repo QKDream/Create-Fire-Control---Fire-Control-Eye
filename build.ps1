@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
-$ws = "C:/Users/1/Documents/Codex/2026-08-07/zhe/cbc-addon/firecontrolcompat"
+$ws = $PSScriptRoot
 $mcLib = "D:/.minecraft/libraries"
-$versionRoot = Get-ChildItem "D:/.minecraft/versions" -Directory | Where-Object { Test-Path (Join-Path $_.FullName "mods/create-fire-control-0.5.9.jar") } | Select-Object -First 1
+$versionRoot = Get-ChildItem "D:/.minecraft/versions" -Directory | Where-Object { Test-Path (Join-Path $_.FullName "mods/create-fire-control-0.7.0.jar") } | Select-Object -First 1
 if (-not $versionRoot) { Write-Host "No version dir with create-fire-control found"; exit 1 }
 $modsDir = Join-Path $versionRoot.FullName "mods"
 Write-Host "Using mods dir: $modsDir"
@@ -12,19 +12,34 @@ $cpDir = "$ws/build/modscp"
 try { if (Test-Path $cpDir) { Remove-Item -Recurse -Force $cpDir -ErrorAction SilentlyContinue } } catch { Write-Host 'modscp cleanup deferred' }
 New-Item -ItemType Directory -Force $cpDir | Out-Null
 $wantedMods = @(
-    "create-fire-control-0.5.9.jar",
+    "create-fire-control-0.7.0.jar",
     "sable-neoforge-1.21.1-2.0.5.jar",
     "shaolib-0.1.0.jar",
-    "shaolib_munitions-0.1.0.jar"
+    "shaolib_munitions-0.1.0.jar",
+    "synaxis-1.5.0.jar",
+    "taov_core-0.1.0.jar",
+    "taov_weapons-0.1.1.jar",
+    "mianbaos_modernwarfare-2.5.0-neoforge.jar"
 )
 foreach ($name in $wantedMods) {
     $src = Join-Path $modsDir $name
     if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $cpDir }
 }
-$createJar = Get-ChildItem -LiteralPath $modsDir -Filter "create-1.21.1-6.0.10.jar" | Select-Object -First 1
-if ($createJar) { Copy-Item -LiteralPath $createJar.FullName -Destination $cpDir }
-$createBigCannons = Get-ChildItem -LiteralPath $modsDir -Filter "createbigcannons-*.jar" | Select-Object -First 1
-if ($createBigCannons) { Copy-Item -LiteralPath $createBigCannons.FullName -Destination $cpDir }
+$sableJar = Join-Path $cpDir "sable-neoforge-1.21.1-2.0.5.jar"
+if (Test-Path -LiteralPath $sableJar) {
+    $companionName = "sable-companion-common-1.21.1-1.6.0.jar"
+    Push-Location $cpDir
+    & $jarExe xf $sableJar "META-INF/jarjar/$companionName"
+    Pop-Location
+    $companionPath = Join-Path $cpDir "META-INF/jarjar/$companionName"
+    if (Test-Path -LiteralPath $companionPath) {
+        Copy-Item -LiteralPath $companionPath -Destination (Join-Path $cpDir $companionName)
+    }
+}
+$createJar = Get-ChildItem -LiteralPath $modsDir -Filter "*create-1.21.1-6.0.10.jar" | Select-Object -First 1
+if ($createJar) { Copy-Item -LiteralPath $createJar.FullName -Destination (Join-Path $cpDir "create-1.21.1-6.0.10.jar") }
+$createBigCannons = Get-ChildItem -LiteralPath $modsDir -Filter "*createbigcannons-*.jar" | Select-Object -First 1
+if ($createBigCannons) { Copy-Item -LiteralPath $createBigCannons.FullName -Destination (Join-Path $cpDir "createbigcannons.jar") }
 
 $cpParts = New-Object System.Collections.Generic.List[string]
 $cpParts.Add("$mcLib/net/neoforged/neoforge/21.1.228/neoforge-21.1.228-client.jar")
@@ -50,7 +65,14 @@ $cpParts.Add("$mcLib/com/google/guava/guava/33.5.0-jre/guava-33.5.0-jre.jar")
 $cpParts.Add("$mcLib/com/google/code/gson/gson/2.10.1/gson-2.10.1.jar")
 $cpParts.Add("$mcLib/org/joml/joml/1.10.5/joml-1.10.5.jar")
 Get-ChildItem -LiteralPath $cpDir -Filter "*.jar" | ForEach-Object { $cpParts.Add($_.FullName.Replace('\','/')) }
-
+$stubOut = "$ws/build/stub_classes"
+try { if (Test-Path $stubOut) { Remove-Item -Recurse -Force $stubOut -ErrorAction SilentlyContinue } } catch { Write-Host "stub cleanup deferred" }
+New-Item -ItemType Directory -Force $stubOut | Out-Null
+& $javac -d $stubOut -proc:none -encoding UTF-8 "$ws/stubs/net/createmod/ponder/api/VirtualBlockEntity.java"
+if ($LASTEXITCODE -ne 0) { Write-Host "STUB COMPILATION FAILED (exit $LASTEXITCODE)"; exit 1 }
+& $jarExe cf "$stubOut/stub.jar" -C $stubOut net
+if ($LASTEXITCODE -ne 0) { Write-Host "STUB JAR FAILED (exit $LASTEXITCODE)"; exit 1 }
+$cpParts.Add(("$stubOut/stub.jar").Replace("\","/"))
 $missing = $cpParts | Where-Object { -not (Test-Path -LiteralPath $_) }
 if ($missing) { Write-Host "MISSING:"; $missing | ForEach-Object { Write-Host "  $_" }; exit 1 }
 $classpath = $cpParts -join ";"
@@ -93,6 +115,9 @@ if (Test-Path $jarOut) {
     Write-Host "JAR FAILED (exit $jarExit)"
     exit 1
 }
+
+
+
 
 
 

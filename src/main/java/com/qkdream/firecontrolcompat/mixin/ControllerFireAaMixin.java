@@ -3,6 +3,7 @@ package com.qkdream.firecontrolcompat.mixin;
 import com.hooya.stabilizedturret.content.controller.BindingRef;
 import com.hooya.stabilizedturret.content.controller.MianbaoAirDefenseCompat;
 import com.hooya.stabilizedturret.content.controller.StabilizerControllerBlockEntity;
+import com.qkdream.firecontrolcompat.BeamMissileCompat;
 import java.util.List;
 import net.minecraft.network.chat.Component;
 import org.spongepowered.asm.mixin.Mixin;
@@ -47,9 +48,11 @@ public abstract class ControllerFireAaMixin {
             List<BindingRef> launchers = self.getAaMissileLaunchers();
             if (launchers.isEmpty()) {
                 this.notifyMissileOperator(Component.literal("防空导弹发射器：未绑定"));
-            } else if (!self.isRadarActive()) {
+            } else if (!self.isRadarActive()
+                    && launchers.stream().noneMatch(launcher -> BeamMissileCompat.hasIrAntiAirAmmo(self.getLevel(), launcher))) {
                 this.notifyMissileOperator(Component.literal("防空导弹：雷达未工作"));
-            } else if (!this.firecontrolcompat$hasRadarLock(self)) {
+            } else if (!this.firecontrolcompat$hasRadarLock(self)
+                    && launchers.stream().noneMatch(launcher -> BeamMissileCompat.hasIrAntiAirAmmo(self.getLevel(), launcher))) {
                 this.notifyMissileOperator(Component.literal("防空导弹：未锁定雷达目标"));
             } else {
                 int size = launchers.size();

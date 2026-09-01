@@ -2,17 +2,20 @@ package com.qkdream.firecontrolcompat.mixin;
 
 import com.hooya.stabilizedturret.client.ClientAimState;
 import com.hooya.stabilizedturret.client.ClientRadarState;
+import com.hooya.stabilizedturret.client.ClientTelevisionGuidanceState;
 import com.hooya.stabilizedturret.client.RadarHudRenderer;
 import com.hooya.stabilizedturret.mixin.client.GameRendererAccessor;
 import com.qkdream.firecontrolcompat.client.LeadArrowRenderer;
 import java.util.List;
 import java.util.UUID;
 import net.minecraft.client.Camera;
+import net.minecraft.client.CameraType;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.client.event.RenderGuiEvent;
 import org.joml.Vector3f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -55,6 +58,39 @@ public abstract class FireControlCompatRadarTwsMixin {
     @Invoker("drawConnectedSquare")
     private static void firecontrolcompat$invokeDrawConnectedSquare(GuiGraphics graphics, int x, int y, int half) {
         throw new AbstractMethodError();
+    }
+
+    @Invoker("renderWorldFrames")
+    private static void firecontrolcompat$invokeRenderWorldFrames(
+            GuiGraphics graphics, Minecraft minecraft, float partialTicks) {
+        throw new AbstractMethodError();
+    }
+
+    /**
+     * Vanilla only calls {@code renderWorldFrames} when the aircraft radar is
+     * active, the player is scoped in or the camera is not first person. That
+     * means the ground radar TWS frames disappear as soon as the player leaves
+     * the scope. When the radar HUD is otherwise active but vanilla skips the
+     * world frames, draw them anyway so the tracks stay visible.
+     */
+    @Inject(method = "render", at = @At("RETURN"))
+    private static void firecontrolcompat$worldFramesOutsideScope(
+            RenderGuiEvent.Post event, CallbackInfo ci) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (!ClientRadarState.isActive()
+                || ClientAimState.isPodView()
+                || ClientTelevisionGuidanceState.isActive()
+                || minecraft.options.hideGui
+                || minecraft.screen != null) {
+            return;
+        }
+        if (ClientRadarState.isAircraftMode()
+                || ClientAimState.isScoped()
+                || minecraft.options.getCameraType() != CameraType.FIRST_PERSON) {
+            return;
+        }
+        firecontrolcompat$invokeRenderWorldFrames(
+                event.getGuiGraphics(), minecraft, event.getPartialTick().getGameTimeDeltaTicks());
     }
 
     @Inject(method = "renderWorldFrames", at = @At("RETURN"))

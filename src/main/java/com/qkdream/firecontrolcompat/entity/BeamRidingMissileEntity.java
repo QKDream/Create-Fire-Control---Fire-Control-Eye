@@ -65,6 +65,9 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
     /** Beam missile lateral overload rating. */
     private static final double GUIDANCE_OVERLOAD_G = 30.0;
     private static final int STEERING_START_TICK = 2;
+    /** Launch boost: for the first 0.5s the missile may turn at least this much per tick (>= 120 degrees total). */
+    private static final int BOOST_TURN_TICKS = 10;
+    private static final double BOOST_TURN_RADIANS_PER_TICK = Math.toRadians(20.0);
 
     protected Vec3 launchPosition;
     protected BlockPos launchSourcePos;
@@ -370,6 +373,9 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         // radians. The velocity direction is slerped toward the target by at
         // most that angle, so hard target passes become smooth arcs.
         double maxTurnRadians = this.guidanceOverloadG() * 9.8 / 400.0 / speed;
+        if (engine <= BOOST_TURN_TICKS) {
+            maxTurnRadians = Math.max(maxTurnRadians, BOOST_TURN_RADIANS_PER_TICK);
+        }
         double fraction = Math.min(1.0, maxTurnRadians / angle);
         double sinAngle = Math.sin(angle);
         double fromWeight = Math.sin((1.0 - fraction) * angle) / sinAngle;
@@ -445,9 +451,15 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
                 (SoundEvent) BuiltInRegistries.SOUND_EVENT.get(ResourceLocation.parse("mianbaos_modernwarfare:explode_far_sound3")),
                 SoundSource.NEUTRAL, 32.0F, (float) Mth.nextDouble(RandomSource.create(), 0.7, 1.0));
         if (level instanceof ServerLevel serverLevel) {
-            serverLevel.explode(null, position.x, position.y, position.z, 5.0F, ExplosionInteraction.BLOCK);
+            serverLevel.explode(null, position.x, position.y, position.z,
+                    this.explosionStrength(), ExplosionInteraction.BLOCK);
         }
         this.discard();
+    }
+
+    /** Explosion strength used when this missile detonates. */
+    protected float explosionStrength() {
+        return 8.0F;
     }
 
     private ProximityHit findProximityTarget(Vec3 segStart, Vec3 segEnd) {

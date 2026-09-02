@@ -61,6 +61,11 @@ public class InfraredMissileEntity extends BeamRidingMissileEntity {
     }
 
     @Override
+    protected float explosionStrength() {
+        return 5.0F;
+    }
+
+    @Override
     protected Vec3 trackedTargetPosition() {
         return currentTrack();
     }

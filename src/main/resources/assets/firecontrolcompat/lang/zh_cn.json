@@ -6,6 +6,7 @@
   "item.firecontrolcompat.beam_riding_missile.description_2": "跟随激光制导器光束飞行，激光指向即命中点",
   "item.firecontrolcompat.beam_riding_missile.description_3": "对Sable结构、面包军火库/CBCMS/TAOV弹药近炸",
   "item.firecontrolcompat.beam_riding_missile.description_4": "5秒加速，极速680格/秒",
+  "item.firecontrolcompat.beam_riding_missile.description_5": "发射后0.5秒内高机动转向（可转过120°以上），随后回归30G过载",
   "item.firecontrolcompat.infrared_missile": "红外锁定导弹",
   "item.firecontrolcompat.infrared_missile.description_0": "制导方式：红外寻的（发射后不管）",
   "item.firecontrolcompat.infrared_missile.description_1": "仅可装填于防空导弹发射器",

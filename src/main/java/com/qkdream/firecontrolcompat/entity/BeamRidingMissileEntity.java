@@ -68,6 +68,8 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
     /** Launch boost: for the first 0.5s the missile may turn at least this much per tick (>= 120 degrees total). */
     private static final int BOOST_TURN_TICKS = 10;
     private static final double BOOST_TURN_RADIANS_PER_TICK = Math.toRadians(20.0);
+    /** Axial speed cap during the 0.5s boost window: 10 ticks x 0.3 blocks = at most 3 blocks flown. */
+    private static final double BOOST_MAX_SPEED = 0.3;
 
     protected Vec3 launchPosition;
     protected BlockPos launchSourcePos;
@@ -154,6 +156,15 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         if (this.launchSpeed < 0.0 && !this.level().isClientSide()) {
             this.launchSpeed = this.getDeltaMovement().length();
         }
+        // Keep the beam missile crawling during its 0.5s boost window so the
+        // whole window covers at most 3 blocks, including the launch tick.
+        if (this.hasLaunchBoost() && this.getPersistentData().getDouble("fadongji1") < BOOST_TURN_TICKS) {
+            Vec3 boostVelocity = this.getDeltaMovement();
+            double boostSpeed = boostVelocity.length();
+            if (boostSpeed > BOOST_MAX_SPEED) {
+                this.setDeltaMovement(boostVelocity.scale(BOOST_MAX_SPEED / boostSpeed));
+            }
+        }
         Vec3 beforeTick = this.position();
         Vec3 beforeDelta = this.getDeltaMovement();
         super.tick();
@@ -216,7 +227,13 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
             return;
         }
 
-        if (engine <= ACCEL_TICKS) {
+        if (this.hasLaunchBoost() && engine <= BOOST_TURN_TICKS) {
+            Vec3 velocity = this.getDeltaMovement();
+            double speed = velocity.length();
+            if (speed > BOOST_MAX_SPEED) {
+                this.setDeltaMovement(velocity.scale(BOOST_MAX_SPEED / speed));
+            }
+        } else if (engine <= ACCEL_TICKS) {
             double desired = this.accelerationTargetSpeed(engine);
             Vec3 velocity = this.getDeltaMovement();
             double speed = velocity.length();
@@ -250,6 +267,11 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
             this.detonate(to, "lifetime");
             return;
         }
+    }
+
+    /** Whether this missile has the 0.5s low-speed high-agility launch boost (beam-riding missile only). */
+    protected boolean hasLaunchBoost() {
+        return this.getType() == BeamMissileRegistry.BEAMRIDER_TANSHE.get();
     }
 
     @Override
@@ -373,7 +395,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         // radians. The velocity direction is slerped toward the target by at
         // most that angle, so hard target passes become smooth arcs.
         double maxTurnRadians = this.guidanceOverloadG() * 9.8 / 400.0 / speed;
-        if (engine <= BOOST_TURN_TICKS) {
+        if (this.hasLaunchBoost() && engine <= BOOST_TURN_TICKS) {
             maxTurnRadians = Math.max(maxTurnRadians, BOOST_TURN_RADIANS_PER_TICK);
         }
         double fraction = Math.min(1.0, maxTurnRadians / angle);
@@ -389,15 +411,17 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
     /** Speed the missile should have after {@code engine} ticks of its 5 second acceleration phase. */
     private double accelerationTargetSpeed(double engine) {
         double topSpeed = this.guidanceSpeed();
-        double start = this.launchSpeed > 0.0 ? this.launchSpeed : topSpeed;
-        // Hold the axial speed during the 0.5s high-overload launch window;
-        // the full ramp to guidance speed starts once the boost expires.
-        if (engine <= BOOST_TURN_TICKS) {
-            return start;
+        if (this.hasLaunchBoost()) {
+            // After the boost window the ramp starts from the crawl speed.
+            double rampTicks = ACCEL_TICKS - BOOST_TURN_TICKS;
+            double progress = Math.min(1.0, (engine - BOOST_TURN_TICKS) / rampTicks);
+            return BOOST_MAX_SPEED + (topSpeed - BOOST_MAX_SPEED) * progress;
         }
-        double rampTicks = ACCEL_TICKS - BOOST_TURN_TICKS;
-        double progress = Math.min(1.0, (engine - BOOST_TURN_TICKS) / rampTicks);
-        return start + (topSpeed - start) * progress;
+        double start = this.launchSpeed > 0.0 ? this.launchSpeed : topSpeed;
+        if (engine >= ACCEL_TICKS) {
+            return topSpeed;
+        }
+        return start + (topSpeed - start) * engine / ACCEL_TICKS;
     }
 
     /** Scatters trail particles along the segment the missile covered this tick so fast missiles leave a solid trail. */

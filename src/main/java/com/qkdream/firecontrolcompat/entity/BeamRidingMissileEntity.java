@@ -390,10 +390,14 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
     private double accelerationTargetSpeed(double engine) {
         double topSpeed = this.guidanceSpeed();
         double start = this.launchSpeed > 0.0 ? this.launchSpeed : topSpeed;
-        if (engine >= ACCEL_TICKS) {
-            return topSpeed;
+        // Hold the axial speed during the 0.5s high-overload launch window;
+        // the full ramp to guidance speed starts once the boost expires.
+        if (engine <= BOOST_TURN_TICKS) {
+            return start;
         }
-        return start + (topSpeed - start) * engine / ACCEL_TICKS;
+        double rampTicks = ACCEL_TICKS - BOOST_TURN_TICKS;
+        double progress = Math.min(1.0, (engine - BOOST_TURN_TICKS) / rampTicks);
+        return start + (topSpeed - start) * progress;
     }
 
     /** Scatters trail particles along the segment the missile covered this tick so fast missiles leave a solid trail. */

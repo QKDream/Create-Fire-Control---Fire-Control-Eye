@@ -6,7 +6,7 @@
   "item.firecontrolcompat.beam_riding_missile.description_2": "Rides the laser designator beam to the aim point",
   "item.firecontrolcompat.beam_riding_missile.description_3": "Proximity fuse against Sable structures and mianbao / CBCMS / TAOV munitions",
   "item.firecontrolcompat.beam_riding_missile.description_4": "5s acceleration to a top speed of 680 blocks/s",
-  "item.firecontrolcompat.beam_riding_missile.description_5": "High-agility turning for 0.5s after launch (120 degrees or more), then 30G overload",
+  "item.firecontrolcompat.beam_riding_missile.description_5": "High-agility turning at low speed for 0.5s after launch (120 degrees or more), then accelerates under 30G overload",
   "item.firecontrolcompat.infrared_missile": "Infrared Homing Missile",
   "item.firecontrolcompat.infrared_missile.description_0": "Guidance: Infrared homing (fire and forget)",
   "item.firecontrolcompat.infrared_missile.description_1": "Loads only into AA missile launchers",

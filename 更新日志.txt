@@ -292,3 +292,8 @@
   - 分组逻辑：电机的被驱动体 UUID 与炮座/发射器所在子结构按原版“子结构距离”算法自动分组，双机炮座（YAW+PITCH）与显示器联动机座正常成组。
   - 偏移（offset）：火控计算机/连接显示器的偏移设置对 Synaxis 电机不生效，偏移完全交给 Synaxis 电机自身的两个轴承设置；偏移仍只对真正的旋转轴承起效。
 - 安装时请从 mods 文件夹移除旧版 firecontrolcompat-1.1.1.jar，避免重复加载。
+
+## 2026-09-06 - v1.2.0 修复补丁（同日更新，版本号不变）
+
+- 修复启动崩溃：StabilizerControllerBlockEntity 存在两个 commandBearing 重载，控制器侧的 Synaxis 注入此前按方法名匹配到了错误的重载导致注入失败（Invalid descriptor），进而中断模组加载并连锁引发 LittleTiles 渲染崩溃。现改为显式指定完整方法描述符，注入成功。
+- 已重新构建并部署 firecontrolcompat-1.2.0.jar（同日覆盖，无版本号变化）。

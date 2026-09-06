@@ -24,7 +24,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Mixin(StabilizerControllerBlockEntity.class)
 public abstract class ControllerSynaxisBearingMixin {
 
-    @Inject(method = "commandBearing", at = @At("HEAD"), cancellable = true)
+    @Inject(
+            method = {
+                    "commandBearing",
+                    "(Lcom/hooya/stabilizedturret/content/controller/BindingRef;ZDLnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/phys/Vec3;DDDLnet/minecraft/world/phys/Vec3;)V"
+            },
+            at = @At("HEAD"),
+            cancellable = true)
     private void firecontrolcompat$synaxisCommandBearing(
             BindingRef ref,
             boolean yaw,

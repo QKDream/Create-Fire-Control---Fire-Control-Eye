@@ -104,7 +104,7 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item -Recurse -Force "$outDir/*" $stage
 Copy-Item -Recurse -Force "$ws/src/main/resources/*" $stage
 
-$jarOut = "$ws/firecontrolcompat-1.1.1.jar"
+$jarOut = "$ws/firecontrolcompat-1.2.0.jar"
 Push-Location $stage
 & $jarExe cf $jarOut *
 $jarExit = $LASTEXITCODE

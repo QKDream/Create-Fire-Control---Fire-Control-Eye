@@ -40,12 +40,16 @@
     "AircraftIrFreeFireMixin",
     "AircraftWeaponNameMixin",
     "RackLoadMixin",
+    "SynaxisBearingBindingMixin",
+    "ControllerSynaxisBearingMixin",
+    "ConnectedDisplaySynaxisBearingMixin"
   ],
   "client": [
     "RadarHudLockLabelMixin",
     "FireControlCompatRadarTwsMixin",
     "ThirdPersonAimHudLockLabelMixin",
-    "FireControlTrailPathMixin"
+    "FireControlTrailPathMixin",
+    "ControllerLeadSettingsMixin"
   ],
   "server": [],
   "injectors": {

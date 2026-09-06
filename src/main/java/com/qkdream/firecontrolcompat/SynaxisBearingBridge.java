@@ -42,9 +42,16 @@ public final class SynaxisBearingBridge {
 
     private static final double MIN_DIRECTION_LENGTH_SQR = 1.0E-8;
     private static final double MIN_PROJECTED_LENGTH_SQR = 1.0E-6;
-    private static final double MIN_COMMAND_RADIANS = 1.0E-5;
 
-    private static final Map<AbstractDynamicMotorBlockEntity, Boolean> ANGLE_MODE =
+    /** Stop re-commanding once the aim error drops below this (mirrors the vanilla bearing servo). */
+    private static final double SETTLE_ENTER_DEGREES = 0.5;
+
+    /** Resume commanding only after the aim error grows past this, giving hysteresis against jitter. */
+    private static final double SETTLE_EXIT_DEGREES = 0.85;
+
+    private static final Map<AbstractDynamicMotorBlockEntity, Boolean> SETTLED_YAW =
+            java.util.Collections.synchronizedMap(new WeakHashMap<>());
+    private static final Map<AbstractDynamicMotorBlockEntity, Boolean> SETTLED_PITCH =
             java.util.Collections.synchronizedMap(new WeakHashMap<>());
 
     private SynaxisBearingBridge() {
@@ -94,6 +101,9 @@ public final class SynaxisBearingBridge {
             if (measured == null || requested == null) {
                 return false;
             }
+            if (!isFinite(measured) || !isFinite(requested)) {
+                return false;
+            }
             if (measured.lengthSqr() < MIN_DIRECTION_LENGTH_SQR
                     || requested.lengthSqr() < MIN_DIRECTION_LENGTH_SQR) {
                 return false;
@@ -102,7 +112,7 @@ public final class SynaxisBearingBridge {
                 return false;
             }
             Vector3d axis = worldAxis(motor);
-            if (axis == null || axis.lengthSquared() < MIN_DIRECTION_LENGTH_SQR) {
+            if (axis == null || !isFinite(axis) || axis.lengthSquared() < MIN_DIRECTION_LENGTH_SQR) {
                 return false;
             }
             axis.normalize();
@@ -124,20 +134,34 @@ public final class SynaxisBearingBridge {
             double sine = axis.dot(new Vector3d(measuredProjected).cross(requestedProjected));
             double cosine = Mth.clamp(measuredProjected.dot(requestedProjected), -1.0, 1.0);
             double delta = Math.atan2(sine, cosine) * errorScale * axisSign(motor);
-            double maxStep = Math.toRadians(Math.max(0.0, speedDegreesPerSecond)) / 20.0;
-            if (Math.abs(delta) > maxStep) {
-                delta = Math.copySign(maxStep, delta);
-            }
-            if (Math.abs(delta) < MIN_COMMAND_RADIANS) {
+            double errorDegrees = Math.toDegrees(delta);
+            double absoluteError = Math.abs(errorDegrees);
+            Map<AbstractDynamicMotorBlockEntity, Boolean> settledMap = yaw ? SETTLED_YAW : SETTLED_PITCH;
+            boolean settled = Boolean.TRUE.equals(settledMap.get(motor));
+            if (settled && absoluteError <= SETTLE_EXIT_DEGREES) {
                 return true;
             }
-            synchronized (ANGLE_MODE) {
-                if (!Boolean.TRUE.equals(ANGLE_MODE.get(motor))) {
-                    motor.setAngleMode(true);
-                    ANGLE_MODE.put(motor, Boolean.TRUE);
-                }
+            if (absoluteError > SETTLE_EXIT_DEGREES) {
+                settledMap.put(motor, Boolean.FALSE);
             }
-            motor.setTarget(motor.currentAngle() + delta);
+            double commanded = absoluteError <= SETTLE_ENTER_DEGREES ? 0.0 : errorDegrees;
+            if (commanded == 0.0) {
+                settledMap.put(motor, Boolean.TRUE);
+                return true;
+            }
+            double maxStep = Math.max(0.0, speedDegreesPerSecond) / 20.0;
+            if (maxStep <= 0.0) {
+                return true;
+            }
+            double step = Mth.clamp(commanded, -maxStep, maxStep);
+            double currentAngle = motor.currentAngle();
+            if (!Double.isFinite(currentAngle)) {
+                return false;
+            }
+            if (!motor.angleMode()) {
+                motor.setAngleMode(true);
+            }
+            motor.setTarget(currentAngle + Math.toRadians(step));
             return true;
         } catch (RuntimeException | LinkageError t) {
             FireControlCompat.LOGGER.debug("[firecontrolcompat] Synaxis bearing aim failed for {}", motor, t);
@@ -212,7 +236,16 @@ public final class SynaxisBearingBridge {
         if (self == null || self.isEmpty()) {
             return local;
         }
-        return self.bodyToWorldDirection(local, new Vector3d());
+        Vector3d world = self.bodyToWorldDirection(local, new Vector3d());
+        return isFinite(world) ? world : local;
+    }
+
+    private static boolean isFinite(Vec3 vector) {
+        return Double.isFinite(vector.x) && Double.isFinite(vector.y) && Double.isFinite(vector.z);
+    }
+
+    private static boolean isFinite(Vector3d vector) {
+        return Double.isFinite(vector.x) && Double.isFinite(vector.y) && Double.isFinite(vector.z);
     }
 
     /** Flipped motor blocks rotate against the right-hand rule. */
@@ -250,7 +283,7 @@ public final class SynaxisBearingBridge {
             PhysicsBodyView companion = motor.readCompanionPhysics();
             if (companion != null && !companion.isEmpty()) {
                 Vector3d up = companion.bodyToWorldDirection(new Vector3d(0.0, 1.0, 0.0), new Vector3d());
-                if (up.lengthSquared() > MIN_DIRECTION_LENGTH_SQR) {
+                if (isFinite(up) && up.lengthSquared() > MIN_DIRECTION_LENGTH_SQR) {
                     return up.normalize();
                 }
             }

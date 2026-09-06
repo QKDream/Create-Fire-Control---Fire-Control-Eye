@@ -76,7 +76,7 @@ public final class MianbaoWeaponHudExecutor
                                 FireControlCompat.MOD_ID,
                                 "weapon_hud/source/" + context.base().source().instanceId()),
                         context.base().source().priority(),
-                        icon.isEmpty() ? new ItemStack(source.getBlockState().getBlock().asItem()) : icon.copy(),
+                        icon.isEmpty() ? new ItemStack(MianbaoWeaponHud.blockState(source).getBlock().asItem()) : icon.copy(),
                         MianbaoWeaponHud.ammoCount(source),
                         0.0F);
     }

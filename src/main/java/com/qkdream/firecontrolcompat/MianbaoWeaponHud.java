@@ -28,6 +28,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.item.ItemStack;
 import net.neoforged.fml.ModList;
 
@@ -190,15 +191,33 @@ public final class MianbaoWeaponHud {
         }
         synchronized (BINDINGS) {
             ArrayList<BlockEntity> stale = new ArrayList<>();
+            ArrayList<BlockEntity> current = new ArrayList<>();
             for (BlockEntity source : BINDINGS.keySet()) {
                 if (source.isRemoved() || !(source.getLevel() instanceof ServerLevel)) {
                     stale.add(source);
                 } else {
+                    current.add(source);
                     WeaponHudService.heartbeat(source);
                 }
             }
             for (BlockEntity source : stale) {
-                BINDINGS.remove(source);
+                WeaponHudBinding binding = BINDINGS.remove(source);
+                if (binding == null || binding.seats().isEmpty() || source.getLevel() == null) {
+                    continue;
+                }
+                // Mianbao launchers and racks replace their own block entity
+                // when loading/firing (block swap with data copy). If that
+                // copy missed the binding, move it to the live block entity
+                // at the same position so the HUD lease survives.
+                BlockEntity replacement = source.getLevel().getBlockEntity(source.getBlockPos());
+                if (replacement != null
+                        && replacement != source
+                        && !replacement.isRemoved()
+                        && !current.contains(replacement)
+                        && WeaponHudSources.find(replacement).isPresent()
+                        && !BINDINGS.containsKey(replacement)) {
+                    BINDINGS.put(replacement, binding);
+                }
             }
         }
     }
@@ -219,12 +238,24 @@ public final class MianbaoWeaponHud {
         }
         if (isRack(source)) {
             boolean loaded = inventory > 0
-                    || persistentAmmo(source) > 0.0
                     || source.getPersistentData().getBoolean(BeamMissileCompat.IR_RACK_KEY)
-                    || source.getBlockState().getBlock() != MianbaosModernwarfareModBlocks.RACK.get();
+                    || blockState(source).getBlock() != MianbaosModernwarfareModBlocks.RACK.get();
             return loaded ? 1 : 0;
         }
         return inventory + (int) persistentAmmo(source);
+    }
+
+    /**
+     * Live block state at the source position. The block entity's cached
+     * {@code getBlockState()} is not updated by Mianbao's block-swap firing
+     * flow, so the cached value keeps reporting a loaded rack after firing.
+     */
+    public static BlockState blockState(BlockEntity source) {
+        Level level = source.getLevel();
+        if (level != null) {
+            return level.getBlockState(source.getBlockPos());
+        }
+        return source.getBlockState();
     }
 
     public static boolean isRack(BlockEntity source) {

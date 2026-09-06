@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import org.slf4j.Logger;
 
 @Mod("firecontrolcompat")
@@ -20,11 +21,16 @@ public final class FireControlCompat {
         ShaolibBridge.resolve();
         CbcAutocannonPayloads.markerType();
         BeamMissileRegistry.register(modEventBus);
+        modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(ContactTypePayload::register);
         modEventBus.addListener(LeadSettingsPayload::register);
         modEventBus.addListener(LeadSettingsSyncPayload::register);
         modEventBus.addListener(MissileTrackPayload::register);
         modEventBus.addListener(SeekerHudPayload::register);
+    }
+
+    private void commonSetup(FMLCommonSetupEvent event) {
+        MianbaoWeaponHud.registerSources();
     }
 }
 

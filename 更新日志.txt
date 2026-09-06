@@ -303,3 +303,11 @@
 - 修复启动崩溃：mixins.json 引用的 ControllerLeadSettingsMixin 及其配套源码（提前量设置、网络同步、开关按钮）在构建源中缺失，导致 ClassNotFoundException。现已将工作区完整源码同步至构建源并重新打包，jar 内 44 个 mixin 类与配置一一对应校验通过。
 - 同步补齐 1.1.1 提前量修复的最新源码（FireControlCompat、LeadArrowRenderer、BeamRidingMissileEntity、TWS mixin、语言文件）。
 - 已重新构建并部署 firecontrolcompat-1.2.0.jar。
+
+## 2026-09-06 - v1.2.0 新增：TAOV HUD-linker 兼容面包学导弹发射器/机载武器挂架
+
+- 新功能：TAOV 武器库的 HUD 连接器（weapon_hud_linker）现在可以识别并绑定面包军火库（Mianbao's Modern Warfare）的导弹发射器与机载武器挂架。
+  - 支持范围：防空导弹发射器（含左右半块）、反坦克导弹发射器全部型号（标准/H2/二型左右/三型/四型）、便携防空系统、地面导弹发射器（头/尾）；机载挂架含 AGM 1-4 号挂架、混合挂架、近距/远距导弹挂架、中程导弹挂架、激光/光电制导导弹挂架、反辐射导弹挂架、巡航/核巡航导弹挂架、JDAM 挂架、各类炸弹挂架与鱼雷挂架。
+  - 绑定流程与原版一致：先用 HUD 连接器选择座椅，再点击发射器/挂架即可绑定；HUD 上会像 TAOV 火箭巢一样显示弹药卡片（载荷图标 + 剩余弹药数）。
+  - 座椅绑定会随方块实体一同保存，重新进入世界后仍然有效；绑定源由服务端逐 tick 心跳维持租约。
+- 实现说明：面包学方块实体均为 MCreator 生成的容器实体，绑定信息存放于独立侧表并通过 RandomizableContainerBlockEntity 的存档钩子持久化，未对面包学自身代码做侵入性修改。

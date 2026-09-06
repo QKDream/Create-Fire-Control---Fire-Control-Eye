@@ -6,6 +6,7 @@ import com.verr1.taov.core.weaponhud.WeaponHudSeatRef;
 import com.verr1.taov.core.weaponhud.WeaponHudSourceDescriptor;
 import com.verr1.taov.core.weaponhud.WeaponHudSources;
 import com.verr1.taov.core.weaponhud.server.WeaponHudService;
+import com.verr1.taov.weapons.registry.TaovWeaponItems;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -27,6 +28,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity;
+import net.minecraft.world.item.ItemStack;
 import net.neoforged.fml.ModList;
 
 /**
@@ -227,6 +229,22 @@ public final class MianbaoWeaponHud {
 
     public static boolean isRack(BlockEntity source) {
         return RACK_TYPES.contains(source.getType());
+    }
+
+    /**
+     * True when the held stack is the TAOV weapon HUD-linker. Used by the
+     * launcher interaction mixin so a binding click is not swallowed by the
+     * launcher's reload handling.
+     */
+    public static boolean isWeaponHudLinker(ItemStack stack) {
+        if (stack.isEmpty() || !ModList.get().isLoaded("taov_weapons")) {
+            return false;
+        }
+        try {
+            return stack.is(TaovWeaponItems.WEAPON_HUD_LINKER);
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private static double persistentAmmo(BlockEntity source) {

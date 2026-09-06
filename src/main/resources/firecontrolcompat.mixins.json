@@ -15,6 +15,7 @@
     "HellfireBindingMixin",
     "HellfireAirDefenseCompatMixin",
     "MianbaoGuidedMissileAdoptMixin",
+    "MianbaoLauncherLinkerUseMixin",
     "OpticalLockCompatMixin",
     "TaovCbcAmmoMappingMixin",
     "TaovGunInventoryValidationMixin",

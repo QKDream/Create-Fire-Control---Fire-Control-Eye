@@ -11,7 +11,9 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
+import net.mcreator.myfirstmod.init.MianbaosModernwarfareModBlocks;
 import net.mcreator.myfirstmod.init.MianbaosModernwarfareModBlockEntities;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
@@ -42,6 +44,8 @@ public final class MianbaoWeaponHud {
 
     private static final Map<BlockEntity, WeaponHudBinding> BINDINGS =
             Collections.synchronizedMap(new IdentityHashMap<>());
+    private static final Set<BlockEntityType<?>> RACK_TYPES =
+            Collections.newSetFromMap(new IdentityHashMap<>());
 
     private static boolean sourcesRegistered;
 
@@ -55,54 +59,57 @@ public final class MianbaoWeaponHud {
         sourcesRegistered = true;
 
         // Missile launchers.
-        register(MianbaosModernwarfareModBlockEntities.ANTIAIRMISSILELAUNCHERBLOCK);
-        register(MianbaosModernwarfareModBlockEntities.ANTIAIRMISSILELAUNCHERLEFT);
-        register(MianbaosModernwarfareModBlockEntities.ANTIAIRMISSILELAUNCHERRIGHT);
-        register(MianbaosModernwarfareModBlockEntities.ANTITANKEMISSILELAUNCHER);
-        register(MianbaosModernwarfareModBlockEntities.ANTITANKEMISSILELAUNCHERH_2);
-        register(MianbaosModernwarfareModBlockEntities.ANTITANKMISSILELAUNCHERERXING_LEFT);
-        register(MianbaosModernwarfareModBlockEntities.ANTITANKMISSILELAUNCHERERXING_RIGHT);
-        register(MianbaosModernwarfareModBlockEntities.ANTITANKMISSILELAUNCHERSANXING);
-        register(MianbaosModernwarfareModBlockEntities.ANTITANKMISSILELAUNCHERSIXING);
-        register(MianbaosModernwarfareModBlockEntities.PORTABLEANTIAIRSYSTEM);
-        register(MianbaosModernwarfareModBlockEntities.GROUNDMISSILELAUNCHERHEAD);
-        register(MianbaosModernwarfareModBlockEntities.GROUNDMISSILELAUNCHERTAIL);
+        register(MianbaosModernwarfareModBlockEntities.ANTIAIRMISSILELAUNCHERBLOCK, false);
+        register(MianbaosModernwarfareModBlockEntities.ANTIAIRMISSILELAUNCHERLEFT, false);
+        register(MianbaosModernwarfareModBlockEntities.ANTIAIRMISSILELAUNCHERRIGHT, false);
+        register(MianbaosModernwarfareModBlockEntities.ANTITANKEMISSILELAUNCHER, false);
+        register(MianbaosModernwarfareModBlockEntities.ANTITANKEMISSILELAUNCHERH_2, false);
+        register(MianbaosModernwarfareModBlockEntities.ANTITANKMISSILELAUNCHERERXING_LEFT, false);
+        register(MianbaosModernwarfareModBlockEntities.ANTITANKMISSILELAUNCHERERXING_RIGHT, false);
+        register(MianbaosModernwarfareModBlockEntities.ANTITANKMISSILELAUNCHERSANXING, false);
+        register(MianbaosModernwarfareModBlockEntities.ANTITANKMISSILELAUNCHERSIXING, false);
+        register(MianbaosModernwarfareModBlockEntities.PORTABLEANTIAIRSYSTEM, false);
+        register(MianbaosModernwarfareModBlockEntities.GROUNDMISSILELAUNCHERHEAD, false);
+        register(MianbaosModernwarfareModBlockEntities.GROUNDMISSILELAUNCHERTAIL, false);
 
         // Aircraft weapon racks.
-        register(MianbaosModernwarfareModBlockEntities.RACK);
-        register(MianbaosModernwarfareModBlockEntities.AGM_MISSILE_1RACK);
-        register(MianbaosModernwarfareModBlockEntities.AGM_MISSILE_2RACK);
-        register(MianbaosModernwarfareModBlockEntities.AGM_MISSILE_3RACK);
-        register(MianbaosModernwarfareModBlockEntities.AGM_MISSILE_4RACK);
-        register(MianbaosModernwarfareModBlockEntities.AG_MMISSILEMIXED_RACK);
-        register(MianbaosModernwarfareModBlockEntities.CLOSE_MISSILE_1RACK);
-        register(MianbaosModernwarfareModBlockEntities.CLOSE_MISSILE_2RACK);
-        register(MianbaosModernwarfareModBlockEntities.FAR_MISSILE_1RACK);
-        register(MianbaosModernwarfareModBlockEntities.FAR_MISSILE_2RACK);
-        register(MianbaosModernwarfareModBlockEntities.MEDIUM_MISSILE_RACK);
-        register(MianbaosModernwarfareModBlockEntities.MEDIUM_AI_MMISSILE_2RACK);
-        register(MianbaosModernwarfareModBlockEntities.LASER_GUIDED_MISSILE_RACK);
-        register(MianbaosModernwarfareModBlockEntities.LASERGUIDEDMISSILESECONDRACK);
-        register(MianbaosModernwarfareModBlockEntities.OPTICALGUIDEDMISSILERACK);
-        register(MianbaosModernwarfareModBlockEntities.ANTIRADIATIONMISSILERACK);
-        register(MianbaosModernwarfareModBlockEntities.CRUISEMISSILERACK);
-        register(MianbaosModernwarfareModBlockEntities.NUCLEARCRUISEMISSILERACK);
-        register(MianbaosModernwarfareModBlockEntities.JDAM_1RACK);
-        register(MianbaosModernwarfareModBlockEntities.JDAM_2RACK);
-        register(MianbaosModernwarfareModBlockEntities.BOMBRACK);
-        register(MianbaosModernwarfareModBlockEntities.MEDIUM_BOMBRACK);
-        register(MianbaosModernwarfareModBlockEntities.CLUSTER_BOMBRACK);
-        register(MianbaosModernwarfareModBlockEntities.EARTHPENETRATORBOMBRACK);
-        register(MianbaosModernwarfareModBlockEntities.FIRE_BOMBRACK);
-        register(MianbaosModernwarfareModBlockEntities.HIGHRESISTANCEBOMBRACK);
-        register(MianbaosModernwarfareModBlockEntities.HIGHEXPLOSIVEGUIDEDTORPEDORACK);
-        register(MianbaosModernwarfareModBlockEntities.HIGHEXPLOSIVEVISUALGUIDEDTORPEDORACK);
+        register(MianbaosModernwarfareModBlockEntities.RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.AGM_MISSILE_1RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.AGM_MISSILE_2RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.AGM_MISSILE_3RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.AGM_MISSILE_4RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.AG_MMISSILEMIXED_RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.CLOSE_MISSILE_1RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.CLOSE_MISSILE_2RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.FAR_MISSILE_1RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.FAR_MISSILE_2RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.MEDIUM_MISSILE_RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.MEDIUM_AI_MMISSILE_2RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.LASER_GUIDED_MISSILE_RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.LASERGUIDEDMISSILESECONDRACK, true);
+        register(MianbaosModernwarfareModBlockEntities.OPTICALGUIDEDMISSILERACK, true);
+        register(MianbaosModernwarfareModBlockEntities.ANTIRADIATIONMISSILERACK, true);
+        register(MianbaosModernwarfareModBlockEntities.CRUISEMISSILERACK, true);
+        register(MianbaosModernwarfareModBlockEntities.NUCLEARCRUISEMISSILERACK, true);
+        register(MianbaosModernwarfareModBlockEntities.JDAM_1RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.JDAM_2RACK, true);
+        register(MianbaosModernwarfareModBlockEntities.BOMBRACK, true);
+        register(MianbaosModernwarfareModBlockEntities.MEDIUM_BOMBRACK, true);
+        register(MianbaosModernwarfareModBlockEntities.CLUSTER_BOMBRACK, true);
+        register(MianbaosModernwarfareModBlockEntities.EARTHPENETRATORBOMBRACK, true);
+        register(MianbaosModernwarfareModBlockEntities.FIRE_BOMBRACK, true);
+        register(MianbaosModernwarfareModBlockEntities.HIGHRESISTANCEBOMBRACK, true);
+        register(MianbaosModernwarfareModBlockEntities.HIGHEXPLOSIVEGUIDEDTORPEDORACK, true);
+        register(MianbaosModernwarfareModBlockEntities.HIGHEXPLOSIVEVISUALGUIDEDTORPEDORACK, true);
     }
 
-    private static void register(Supplier<? extends BlockEntityType<?>> holder) {
+    private static void register(Supplier<? extends BlockEntityType<?>> holder, boolean rack) {
         BlockEntityType<?> type = holder.get();
         if (type == null) {
             return;
+        }
+        if (rack) {
+            RACK_TYPES.add(type);
         }
         WeaponHudSources.register(new WeaponHudSourceDescriptor<>(
                 (BlockEntityType<RandomizableContainerBlockEntity>) type,
@@ -192,5 +199,43 @@ public final class MianbaoWeaponHud {
                 BINDINGS.remove(source);
             }
         }
+    }
+
+    /**
+     * HUD ammunition display for a bound Mianbao source. Launchers report the
+     * real loaded count from the persistent-data ammo keys (plus anything the
+     * player put in the container GUI). Racks report 1 while loaded and 0 when
+     * empty: their loaded state is the block itself, and firing swaps the block
+     * back to the bare RACK pylon.
+     */
+    public static int ammoCount(BlockEntity source) {
+        int inventory = 0;
+        if (source instanceof RandomizableContainerBlockEntity container) {
+            for (int slot = 0; slot < container.getContainerSize(); slot++) {
+                inventory += container.getItem(slot).getCount();
+            }
+        }
+        if (isRack(source)) {
+            boolean loaded = inventory > 0
+                    || persistentAmmo(source) > 0.0
+                    || source.getPersistentData().getBoolean(BeamMissileCompat.IR_RACK_KEY)
+                    || source.getBlockState().getBlock() != MianbaosModernwarfareModBlocks.RACK.get();
+            return loaded ? 1 : 0;
+        }
+        return inventory + (int) persistentAmmo(source);
+    }
+
+    public static boolean isRack(BlockEntity source) {
+        return RACK_TYPES.contains(source.getType());
+    }
+
+    private static double persistentAmmo(BlockEntity source) {
+        CompoundTag data = source.getPersistentData();
+        return data.getDouble(BeamMissileCompat.AA_AMMO_KEY)
+                + data.getDouble(BeamMissileCompat.ATGM_AMMO_KEY_1)
+                + data.getDouble(BeamMissileCompat.ATGM_AMMO_KEY_2)
+                + data.getDouble(BeamMissileCompat.MIXED_AA_KEY)
+                + data.getDouble(BeamMissileCompat.MIXED_AT_KEY_1)
+                + data.getDouble(BeamMissileCompat.MIXED_AT_KEY_2);
     }
 }

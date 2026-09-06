@@ -1,6 +1,7 @@
 package com.qkdream.firecontrolcompat.client;
 
 import com.qkdream.firecontrolcompat.FireControlCompat;
+import com.qkdream.firecontrolcompat.MianbaoWeaponHud;
 import com.verr1.taov.core.weaponhud.WeaponHudEvent;
 import com.verr1.taov.core.weaponhud.client.WeaponHudComposeContext;
 import com.verr1.taov.core.weaponhud.client.WeaponHudContext;
@@ -76,7 +77,7 @@ public final class MianbaoWeaponHudExecutor
                                 "weapon_hud/source/" + context.base().source().instanceId()),
                         context.base().source().priority(),
                         icon.isEmpty() ? new ItemStack(source.getBlockState().getBlock().asItem()) : icon.copy(),
-                        totalCount(source),
+                        MianbaoWeaponHud.ammoCount(source),
                         0.0F);
     }
 
@@ -90,11 +91,4 @@ public final class MianbaoWeaponHudExecutor
         return ItemStack.EMPTY;
     }
 
-    private static int totalCount(RandomizableContainerBlockEntity source) {
-        int count = 0;
-        for (int slot = 0; slot < source.getContainerSize(); slot++) {
-            count += source.getItem(slot).getCount();
-        }
-        return count;
-    }
 }

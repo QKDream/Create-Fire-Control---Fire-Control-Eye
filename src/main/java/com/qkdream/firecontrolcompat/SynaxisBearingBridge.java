@@ -43,15 +43,18 @@ public final class SynaxisBearingBridge {
     private static final double MIN_DIRECTION_LENGTH_SQR = 1.0E-8;
     private static final double MIN_PROJECTED_LENGTH_SQR = 1.0E-6;
 
-    /** Stop re-commanding once the aim error drops below this (mirrors the vanilla bearing servo). */
-    private static final double SETTLE_ENTER_DEGREES = 0.5;
+    /** Low-pass factor applied to the per-tick aim error, filtering measurement noise. */
+    private static final double FILTER_ALPHA = 0.3;
 
-    /** Resume commanding only after the aim error grows past this, giving hysteresis against jitter. */
-    private static final double SETTLE_EXIT_DEGREES = 0.85;
+    /** Start commanding once the filtered error exceeds this. */
+    private static final double COMMAND_ENTER_DEGREES = 0.25;
 
-    private static final Map<AbstractDynamicMotorBlockEntity, Boolean> SETTLED_YAW =
+    /** Stop commanding once the filtered error drops below this while active. */
+    private static final double COMMAND_EXIT_DEGREES = 0.12;
+
+    private static final Map<AbstractDynamicMotorBlockEntity, AimFilter> FILTER_YAW =
             java.util.Collections.synchronizedMap(new WeakHashMap<>());
-    private static final Map<AbstractDynamicMotorBlockEntity, Boolean> SETTLED_PITCH =
+    private static final Map<AbstractDynamicMotorBlockEntity, AimFilter> FILTER_PITCH =
             java.util.Collections.synchronizedMap(new WeakHashMap<>());
 
     private SynaxisBearingBridge() {
@@ -86,6 +89,7 @@ public final class SynaxisBearingBridge {
      */
     public static boolean commandAim(
             AbstractDynamicMotorBlockEntity motor,
+            String source,
             boolean yaw,
             Vec3 measured,
             Vec3 requested,
@@ -98,21 +102,29 @@ public final class SynaxisBearingBridge {
             if (level == null || level.isClientSide || motor.isRemoved()) {
                 return false;
             }
+            if (source == null) {
+                source = "unknown";
+            }
             if (measured == null || requested == null) {
+                skipLog(level, motor, source, yaw, "null-input");
                 return false;
             }
             if (!isFinite(measured) || !isFinite(requested)) {
+                skipLog(level, motor, source, yaw, "non-finite-input");
                 return false;
             }
             if (measured.lengthSqr() < MIN_DIRECTION_LENGTH_SQR
                     || requested.lengthSqr() < MIN_DIRECTION_LENGTH_SQR) {
+                skipLog(level, motor, source, yaw, "zero-input");
                 return false;
             }
             if (!motor.hasResolvedCompanion()) {
+                skipLog(level, motor, source, yaw, "companion-unresolved");
                 return false;
             }
             Vector3d axis = worldAxis(motor);
             if (axis == null || !isFinite(axis) || axis.lengthSquared() < MIN_DIRECTION_LENGTH_SQR) {
+                skipLog(level, motor, source, yaw, "bad-axis");
                 return false;
             }
             axis.normalize();
@@ -127,6 +139,7 @@ public final class SynaxisBearingBridge {
                     new Vector3d(requestedVector).sub(new Vector3d(axis).mul(requestedVector.dot(axis)));
             if (measuredProjected.lengthSquared() < MIN_PROJECTED_LENGTH_SQR
                     || requestedProjected.lengthSquared() < MIN_PROJECTED_LENGTH_SQR) {
+                skipLog(level, motor, source, yaw, "degenerate-projection");
                 return false;
             }
             measuredProjected.normalize();
@@ -134,26 +147,39 @@ public final class SynaxisBearingBridge {
             double sine = axis.dot(new Vector3d(measuredProjected).cross(requestedProjected));
             double cosine = Mth.clamp(measuredProjected.dot(requestedProjected), -1.0, 1.0);
             double delta = Math.atan2(sine, cosine) * errorScale * axisSign(motor);
-            double errorDegrees = Math.toDegrees(delta);
-            double absoluteError = Math.abs(errorDegrees);
-            Map<AbstractDynamicMotorBlockEntity, Boolean> settledMap = yaw ? SETTLED_YAW : SETTLED_PITCH;
-            boolean settled = Boolean.TRUE.equals(settledMap.get(motor));
-            if (settled && absoluteError <= SETTLE_EXIT_DEGREES) {
-                return true;
+            double rawErrorDegrees = Math.toDegrees(delta);
+            Map<AbstractDynamicMotorBlockEntity, AimFilter> filterMap = yaw ? FILTER_YAW : FILTER_PITCH;
+            AimFilter filter;
+            synchronized (filterMap) {
+                filter = filterMap.get(motor);
+                if (filter == null) {
+                    filter = new AimFilter();
+                    filterMap.put(motor, filter);
+                }
             }
-            if (absoluteError > SETTLE_EXIT_DEGREES) {
-                settledMap.put(motor, Boolean.FALSE);
-            }
-            double commanded = absoluteError <= SETTLE_ENTER_DEGREES ? 0.0 : errorDegrees;
-            if (commanded == 0.0) {
-                settledMap.put(motor, Boolean.TRUE);
-                return true;
+            double filteredError;
+            boolean active;
+            synchronized (filter) {
+                filter.filteredError += FILTER_ALPHA * (rawErrorDegrees - filter.filteredError);
+                filteredError = filter.filteredError;
+                if (!filter.active) {
+                    if (Math.abs(filteredError) <= COMMAND_ENTER_DEGREES) {
+                        debugLog(level, motor, source, yaw, rawErrorDegrees, filteredError, 0.0, false);
+                        return true;
+                    }
+                    filter.active = true;
+                } else if (Math.abs(filteredError) < COMMAND_EXIT_DEGREES) {
+                    filter.active = false;
+                    debugLog(level, motor, source, yaw, rawErrorDegrees, filteredError, 0.0, false);
+                    return true;
+                }
+                active = filter.active;
             }
             double maxStep = Math.max(0.0, speedDegreesPerSecond) / 20.0;
             if (maxStep <= 0.0) {
                 return true;
             }
-            double step = Mth.clamp(commanded, -maxStep, maxStep);
+            double step = Mth.clamp(filteredError, -maxStep, maxStep);
             double currentAngle = motor.currentAngle();
             if (!Double.isFinite(currentAngle)) {
                 return false;
@@ -162,11 +188,49 @@ public final class SynaxisBearingBridge {
                 motor.setAngleMode(true);
             }
             motor.setTarget(currentAngle + Math.toRadians(step));
+            debugLog(level, motor, source, yaw, rawErrorDegrees, filteredError, step, active);
             return true;
         } catch (RuntimeException | LinkageError t) {
             FireControlCompat.LOGGER.debug("[firecontrolcompat] Synaxis bearing aim failed for {}", motor, t);
             return false;
         }
+    }
+
+    private static void skipLog(Level level, AbstractDynamicMotorBlockEntity motor, String source, boolean yaw, String reason) {
+        if (level != null && level.getGameTime() % 100 == 0) {
+            FireControlCompat.LOGGER.info(
+                    "[firecontrolcompat] synaxis aim skip {} motor={} yaw={} reason={}",
+                    source, motor.getBlockPos(), yaw, reason);
+        }
+    }
+
+    private static void debugLog(
+            Level level,
+            AbstractDynamicMotorBlockEntity motor,
+            String source,
+            boolean yaw,
+            double rawErrorDegrees,
+            double filteredErrorDegrees,
+            double stepDegrees,
+            boolean active) {
+        if (level != null && level.getGameTime() % 20 == 0) {
+            FireControlCompat.LOGGER.info(
+                    "[firecontrolcompat] synaxis aim {} motor={} yaw={} raw={}deg filt={}deg step={}deg active={} angle={}rad target={}rad",
+                    source,
+                    motor.getBlockPos(),
+                    yaw,
+                    String.format(java.util.Locale.ROOT, "%.4f", rawErrorDegrees),
+                    String.format(java.util.Locale.ROOT, "%.4f", filteredErrorDegrees),
+                    String.format(java.util.Locale.ROOT, "%.4f", stepDegrees),
+                    active,
+                    String.format(java.util.Locale.ROOT, "%.4f", motor.currentAngle()),
+                    String.format(java.util.Locale.ROOT, "%.4f", motor.target()));
+        }
+    }
+
+    private static final class AimFilter {
+        private double filteredError;
+        private boolean active;
     }
 
     /**

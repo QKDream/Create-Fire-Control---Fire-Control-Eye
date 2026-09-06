@@ -56,7 +56,7 @@ public abstract class ConnectedDisplaySynaxisBearingMixin {
         double depression = yaw ? 180.0 : this.depressionLimit;
         double elevation = yaw ? 180.0 : this.elevationLimit;
         if (SynaxisBearingBridge.commandAim(
-                motor, yaw, measured, requested, speed, errorScale, depression, elevation)) {
+                motor, "display", yaw, measured, requested, speed, errorScale, depression, elevation)) {
             ci.cancel();
         }
     }

@@ -52,6 +52,7 @@ public abstract class ControllerSynaxisBearingMixin {
         }
         if (SynaxisBearingBridge.commandAim(
                 motor,
+                "controller",
                 yaw,
                 measuredWorldDirection,
                 requestedWorldDirection,

@@ -7,6 +7,7 @@
   "item.firecontrolcompat.beam_riding_missile.description_3": "对Sable结构、面包军火库/CBCMS/TAOV弹药近炸",
   "item.firecontrolcompat.beam_riding_missile.description_4": "5秒加速，极速680格/秒",
   "item.firecontrolcompat.beam_riding_missile.description_5": "发射后0.5秒内低速高机动转向（飞行不超过3格，可转过120°以上），之后开始加速，过载30G",
+  "item.firecontrolcompat.beam_riding_missile.description_6": "发射模式与近炸范围可在火控计算机的提前量设置中调整",
   "item.firecontrolcompat.infrared_missile": "红外锁定导弹",
   "item.firecontrolcompat.infrared_missile.description_0": "制导方式：红外寻的（发射后不管）",
   "item.firecontrolcompat.infrared_missile.description_1": "仅可装填于防空导弹发射器",
@@ -21,5 +22,11 @@
   "item.firecontrolcompat.aircraft_infrared_missile.description_4": "5秒加速，极速340格/秒（1马赫），过载25G",
   "entity.firecontrolcompat.beamrider_tanshe": "架束近炸导弹",
   "entity.firecontrolcompat.infrared_tanshe": "红外锁定导弹",
-  "entity.firecontrolcompat.aircraft_infrared_tanshe": "空载红外锁定导弹"
+  "entity.firecontrolcompat.aircraft_infrared_tanshe": "空载红外锁定导弹",
+  "gui.firecontrolcompat.lead_settings": "提前量设置",
+  "gui.firecontrolcompat.gun_lead": "机炮提前量：%s",
+  "gui.firecontrolcompat.beam_launch_mode": "架束弹发射模式：%s",
+  "gui.firecontrolcompat.vertical_launch": "垂直发射",
+  "gui.firecontrolcompat.horizontal_launch": "水平发射",
+  "gui.firecontrolcompat.beam_proximity_range": "架束弹近炸范围"
 }

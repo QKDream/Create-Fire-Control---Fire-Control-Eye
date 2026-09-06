@@ -2,11 +2,14 @@ package com.qkdream.firecontrolcompat.client;
 
 import com.hooya.stabilizedturret.client.ClientRadarState;
 import com.hooya.stabilizedturret.mixin.client.GameRendererAccessor;
+import com.qkdream.firecontrolcompat.FireControlLeadSettings;
 import java.util.List;
+import java.util.UUID;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3f;
 
@@ -24,17 +27,42 @@ public final class LeadArrowRenderer {
 
     public static final double MUZZLE_SPEED = 6.0D;
 
-    private static final double MAX_FLIGHT_TICKS = 5.0D;
+    private static final double MAX_FLIGHT_TICKS = 40.0D;
 
     private static final double FALLBACK_FLIGHT_TICKS = 2.0D;
 
-    private static final double MAX_SCREEN_LENGTH = 160.0D;
+    private static final double MAX_SCREEN_LENGTH_BASE = 240.0D;
 
-    private static final double MIN_SCREEN_LENGTH = 14.0D;
+    private static final double MAX_SCREEN_LENGTH_HEIGHT_FACTOR = 0.55D;
 
-    private static final double FALLBACK_SCREEN_LENGTH = 28.0D;
+    private static final double MIN_SCREEN_LENGTH = 3.0D;
+
+    private static final double FALLBACK_SCREEN_LENGTH_BASE = 14.0D;
+
+    private static final double FALLBACK_SCREEN_LENGTH_HEIGHT_FACTOR = 0.05D;
 
     private static final int TIP_RADIUS = 4;
+
+    /** Last entity resolved as the velocity source, reused for a few ticks. */
+    private static Entity cachedVelocityEntity;
+
+    private static Vec3 cachedVelocityPoint = Vec3.ZERO;
+
+    private static long cachedScanTick;
+
+    private static boolean cachedScanValid;
+
+    /** Optical lock point history used to derive the target's real velocity. */
+    private static Vec3 previousLockPoint;
+
+    private static long previousLockPointNanos;
+
+    private static Vec3 smoothedLockVelocity;
+
+    /** Last radar contact id whose estimated velocity was smoothed. */
+    private static UUID smoothedContactId;
+
+    private static Vec3 smoothedContactVelocity;
 
     private LeadArrowRenderer() {
     }
@@ -50,6 +78,9 @@ public final class LeadArrowRenderer {
             GuiGraphics graphics, int originX, int originY,
             Minecraft minecraft, float partialTicks,
             Vec3 targetPos, Vec3 targetVelocity) {
+        if (!FireControlLeadSettings.gunLeadEnabled()) {
+            return;
+        }
         Vec3 launchPos = launchPosition(minecraft);
         Vec3 own = ClientRadarState.isActive() ? ClientRadarState.getOwnVelocity() : null;
         Vec3 relative = own == null ? targetVelocity : targetVelocity.subtract(own);
@@ -69,8 +100,10 @@ public final class LeadArrowRenderer {
             if (direction == null) {
                 return;
             }
-            int endX = originX + (int) Math.round(direction[0] * FALLBACK_SCREEN_LENGTH);
-            int endY = originY + (int) Math.round(direction[1] * FALLBACK_SCREEN_LENGTH);
+            double fallbackLength = Math.max(
+                    FALLBACK_SCREEN_LENGTH_BASE, height * FALLBACK_SCREEN_LENGTH_HEIGHT_FACTOR);
+            int endX = originX + (int) Math.round(direction[0] * fallbackLength);
+            int endY = originY + (int) Math.round(direction[1] * fallbackLength);
             drawSegment(graphics, originX, originY, endX, endY);
             drawCircle(graphics, endX, endY, TIP_RADIUS);
             return;
@@ -81,7 +114,8 @@ public final class LeadArrowRenderer {
         if (length < 1.0E-6D) {
             return;
         }
-        double capped = Math.min(Math.max(length, MIN_SCREEN_LENGTH), MAX_SCREEN_LENGTH);
+        double maxLength = Math.max(MAX_SCREEN_LENGTH_BASE, height * MAX_SCREEN_LENGTH_HEIGHT_FACTOR);
+        double capped = Math.min(Math.max(length, MIN_SCREEN_LENGTH), maxLength);
         int endX = originX + (int) Math.round(offsetX / length * capped);
         int endY = originY + (int) Math.round(offsetY / length * capped);
         drawSegment(graphics, originX, originY, endX, endY);
@@ -122,47 +156,172 @@ public final class LeadArrowRenderer {
     }
 
     /**
-     * Best-effort velocity of the moving target under an optical lock point:
-     * prefers the matching radar contact, then falls back to the moving
-     * entity nearest to the point.
+     * Velocity of the moving target under an optical lock point. The lock
+     * point follows the target surface every frame, so its own history is the
+     * most accurate, lag-free and cheapest velocity source and never
+     * alternates with other estimates. When the history is fresh, it is
+     * returned directly; only on the first frame of a lock (or after a lock
+     * jump) the radar contact nearest to the point, and finally a cached
+     * moving-entity scan, are used as fallbacks.
      */
     public static Vec3 velocityFor(Vec3 point) {
         if (point == null) {
             return null;
         }
-        List<ClientRadarState.Contact> contacts = ClientRadarState.getContacts();
-        if (contacts != null) {
-            for (ClientRadarState.Contact contact : contacts) {
-                Vec3 velocity = contact.velocity();
-                if (velocity == null || velocity.lengthSqr() < 1.0E-6D) {
-                    continue;
+        Vec3 historyVelocity = historyVelocity(point);
+        if (historyVelocity != null) {
+            return historyVelocity;
+        }
+        Vec3 contactVelocity = contactVelocityNear(point);
+        if (contactVelocity != null) {
+            return contactVelocity;
+        }
+        return entityVelocityNear(point);
+    }
+
+    /**
+     * Smooths a radar-estimated contact velocity per contact id so the radar
+     * lock lead arrow does not jitter or flicker between sweeps. The first
+     * sample for a new id is accepted as-is.
+     */
+    public static Vec3 stabilizedContactVelocity(UUID id, Vec3 raw) {
+        if (raw == null) {
+            return null;
+        }
+        if (id == null) {
+            return raw;
+        }
+        if (!id.equals(smoothedContactId)) {
+            smoothedContactId = id;
+            smoothedContactVelocity = raw;
+            return raw;
+        }
+        if (smoothedContactVelocity == null) {
+            smoothedContactVelocity = raw;
+            return raw;
+        }
+        smoothedContactVelocity =
+                smoothedContactVelocity.add(raw.subtract(smoothedContactVelocity).scale(0.4D));
+        return smoothedContactVelocity;
+    }
+
+    /**
+     * Derives the target velocity from consecutive optical lock points.
+     * Returns null while the history is missing, stale, or when the point
+     * jumped to a different target, in which case the smoothing restarts.
+     */
+    private static Vec3 historyVelocity(Vec3 point) {
+        long nowNanos = System.nanoTime();
+        Vec3 result = null;
+        if (previousLockPoint != null && previousLockPointNanos > 0L) {
+            double dtTicks = (nowNanos - previousLockPointNanos) / 1.0E9 / 0.05D;
+            if (dtTicks > 1.0E-6D && dtTicks < 20.0D) {
+                Vec3 velocity = point.subtract(previousLockPoint).scale(1.0D / dtTicks);
+                if (velocity.lengthSqr() <= 3600.0D) {
+                    smoothedLockVelocity = smoothedLockVelocity == null
+                            ? velocity
+                            : smoothedLockVelocity.add(
+                                    velocity.subtract(smoothedLockVelocity).scale(0.4D));
+                    result = smoothedLockVelocity;
+                } else {
+                    smoothedLockVelocity = null;
                 }
-                if (contact.bounds() != null && contact.bounds().inflate(4.0D).contains(point)) {
-                    return velocity;
-                }
-                if (contact.center().distanceToSqr(point) <= 400.0D) {
-                    return velocity;
-                }
+            } else {
+                smoothedLockVelocity = null;
             }
         }
+        previousLockPoint = point;
+        previousLockPointNanos = nowNanos;
+        return result;
+    }
+
+    /** Nearest radar contact around the point, containment preferred. */
+    private static Vec3 contactVelocityNear(Vec3 point) {
+        List<ClientRadarState.Contact> contacts = ClientRadarState.getContacts();
+        if (contacts == null) {
+            return null;
+        }
+        ClientRadarState.Contact best = null;
+        boolean bestContained = false;
+        double bestCenterDistanceSqr = Double.MAX_VALUE;
+        for (ClientRadarState.Contact contact : contacts) {
+            Vec3 velocity = contact.velocity();
+            if (velocity == null) {
+                continue;
+            }
+            boolean contained =
+                    contact.bounds() != null && contact.bounds().inflate(4.0D).contains(point);
+            double centerDistanceSqr = contact.center().distanceToSqr(point);
+            if (!contained && centerDistanceSqr > 576.0D) {
+                continue;
+            }
+            boolean better =
+                    contained && !bestContained
+                            || contained == bestContained
+                                    && centerDistanceSqr < bestCenterDistanceSqr;
+            if (best == null || better) {
+                best = contact;
+                bestContained = contained;
+                bestCenterDistanceSqr = centerDistanceSqr;
+            }
+        }
+        if (best == null) {
+            return null;
+        }
+        return stabilizedContactVelocity(best.id(), best.velocity());
+    }
+
+    /** Moving entity nearest to the point, resolved by a throttled scan. */
+    private static Vec3 entityVelocityNear(Vec3 point) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.level == null) {
             return null;
         }
-        Vec3 best = null;
-        double bestDistanceSqr = 144.0D;
+        long now = minecraft.level.getGameTime();
+        if (now < cachedScanTick) {
+            cachedScanValid = false;
+            cachedVelocityEntity = null;
+        }
+        if (cachedScanValid && now - cachedScanTick <= 3L) {
+            if (cachedVelocityEntity == null) {
+                return null;
+            }
+            if (cachedVelocityEntity.isAlive()
+                    && !cachedVelocityEntity.isRemoved()
+                    && point.distanceToSqr(cachedVelocityPoint) <= 225.0D) {
+                Vec3 velocity = cachedVelocityEntity.getDeltaMovement();
+                if (velocity != null && velocity.lengthSqr() >= 1.0E-6D) {
+                    return velocity;
+                }
+            }
+        }
+        Entity bestEntity = null;
+        Vec3 bestVelocity = null;
+        double bestDistanceSqr = 576.0D;
         for (Entity entity : minecraft.level.entitiesForRendering()) {
             Vec3 velocity = entity.getDeltaMovement();
             if (velocity == null || velocity.lengthSqr() < 1.0E-6D) {
                 continue;
             }
-            double distanceSqr = entity.getBoundingBox().inflate(2.0D).distanceToSqr(point);
+            AABB bounds = entity.getBoundingBox();
+            double centerX = (bounds.minX + bounds.maxX) * 0.5D;
+            double centerY = (bounds.minY + bounds.maxY) * 0.5D;
+            double centerZ = (bounds.minZ + bounds.maxZ) * 0.5D;
+            double offsetX = Math.max(0.0D, Math.abs(point.x - centerX) - bounds.getXsize() * 0.5D - 2.0D);
+            double offsetY = Math.max(0.0D, Math.abs(point.y - centerY) - bounds.getYsize() * 0.5D - 2.0D);
+            double offsetZ = Math.max(0.0D, Math.abs(point.z - centerZ) - bounds.getZsize() * 0.5D - 2.0D);
+            double distanceSqr = offsetX * offsetX + offsetY * offsetY + offsetZ * offsetZ;
             if (distanceSqr < bestDistanceSqr) {
                 bestDistanceSqr = distanceSqr;
-                best = velocity;
+                bestVelocity = velocity;
+                bestEntity = entity;
             }
         }
-        return best;
+        cachedVelocityEntity = bestEntity;
+        cachedVelocityPoint = point;
+        cachedScanTick = now;
+        cachedScanValid = true;
+        return bestVelocity;
     }
 
     private static Vec3 launchPosition(Minecraft minecraft) {

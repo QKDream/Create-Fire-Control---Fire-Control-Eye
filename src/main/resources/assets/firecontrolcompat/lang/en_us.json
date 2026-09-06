@@ -7,6 +7,7 @@
   "item.firecontrolcompat.beam_riding_missile.description_3": "Proximity fuse against Sable structures and mianbao / CBCMS / TAOV munitions",
   "item.firecontrolcompat.beam_riding_missile.description_4": "5s acceleration to a top speed of 680 blocks/s",
   "item.firecontrolcompat.beam_riding_missile.description_5": "High-agility turning for 0.5s after launch (flies at most 3 blocks, 120 degrees or more), then accelerates under 30G overload",
+  "item.firecontrolcompat.beam_riding_missile.description_6": "Launch mode and proximity range are configurable in the fire control computer's lead settings",
   "item.firecontrolcompat.infrared_missile": "Infrared Homing Missile",
   "item.firecontrolcompat.infrared_missile.description_0": "Guidance: Infrared homing (fire and forget)",
   "item.firecontrolcompat.infrared_missile.description_1": "Loads only into AA missile launchers",
@@ -21,5 +22,11 @@
   "item.firecontrolcompat.aircraft_infrared_missile.description_4": "5s acceleration to a top speed of 340 blocks/s (Mach 1), 25G overload",
   "entity.firecontrolcompat.beamrider_tanshe": "Beam-Riding Proximity Missile",
   "entity.firecontrolcompat.infrared_tanshe": "Infrared Homing Missile",
-  "entity.firecontrolcompat.aircraft_infrared_tanshe": "Aircraft Infrared Homing Missile"
+  "entity.firecontrolcompat.aircraft_infrared_tanshe": "Aircraft Infrared Homing Missile",
+  "gui.firecontrolcompat.lead_settings": "Lead Settings",
+  "gui.firecontrolcompat.gun_lead": "Cannon lead: %s",
+  "gui.firecontrolcompat.beam_launch_mode": "Beam launch mode: %s",
+  "gui.firecontrolcompat.vertical_launch": "Vertical launch",
+  "gui.firecontrolcompat.horizontal_launch": "Horizontal launch",
+  "gui.firecontrolcompat.beam_proximity_range": "Beam proximity range"
 }

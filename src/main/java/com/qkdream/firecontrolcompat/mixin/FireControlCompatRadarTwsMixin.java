@@ -153,7 +153,7 @@ public abstract class FireControlCompatRadarTwsMixin {
                 break;
             }
         }
-        if (lockedContact == null || lockedContact.velocity() == null) {
+        if (lockedContact == null) {
             return;
         }
         int[] origin = firecontrolcompat$project(
@@ -161,9 +161,15 @@ public abstract class FireControlCompatRadarTwsMixin {
         if (origin == null) {
             return;
         }
+        Vec3 leadVelocity =
+                LeadArrowRenderer.stabilizedContactVelocity(
+                        lockedContact.id(), lockedContact.velocity());
+        if (leadVelocity == null) {
+            return;
+        }
         LeadArrowRenderer.draw(
                 graphics, origin[0], origin[1], minecraft, partialTicks,
-                lockedContact.center(), lockedContact.velocity());
+                lockedContact.center(), leadVelocity);
     }
 
     @Unique

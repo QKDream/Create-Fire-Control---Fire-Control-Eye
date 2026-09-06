@@ -1,6 +1,8 @@
 package com.qkdream.firecontrolcompat;
 
 import com.qkdream.firecontrolcompat.network.ContactTypePayload;
+import com.qkdream.firecontrolcompat.network.LeadSettingsPayload;
+import com.qkdream.firecontrolcompat.network.LeadSettingsSyncPayload;
 import com.qkdream.firecontrolcompat.network.MissileTrackPayload;
 import com.qkdream.firecontrolcompat.network.SeekerHudPayload;
 import org.slf4j.LoggerFactory;
@@ -19,6 +21,8 @@ public final class FireControlCompat {
         CbcAutocannonPayloads.markerType();
         BeamMissileRegistry.register(modEventBus);
         modEventBus.addListener(ContactTypePayload::register);
+        modEventBus.addListener(LeadSettingsPayload::register);
+        modEventBus.addListener(LeadSettingsSyncPayload::register);
         modEventBus.addListener(MissileTrackPayload::register);
         modEventBus.addListener(SeekerHudPayload::register);
     }

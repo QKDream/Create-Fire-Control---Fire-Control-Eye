@@ -3,6 +3,7 @@ package com.qkdream.firecontrolcompat.entity;
 import com.hooya.stabilizedturret.network.MissileRemoteStatePayload;
 import com.qkdream.firecontrolcompat.BeamMissileRegistry;
 import com.qkdream.firecontrolcompat.FireControlCompat;
+import com.qkdream.firecontrolcompat.FireControlLeadSettings;
 import com.qkdream.firecontrolcompat.ShaolibBridge;
 import com.qkdream.firecontrolcompat.network.MissileTrackPayload;
 import dev.ryanhcode.sable.Sable;
@@ -75,6 +76,11 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
     protected BlockPos launchSourcePos;
     protected UUID launchSubLevelId;
     private double launchSpeed = -1.0;
+    /** Vertical (boost) or horizontal (direct acceleration) launch mode snapshot. */
+    private boolean verticalLaunch = true;
+    /** Proximity fuse range snapshot taken from the fire control computer setting. */
+    private double proximityRadius = PROXIMITY_RADIUS;
+    private boolean launchSettingsCaptured;
 
     /** Guidance top speed in blocks per tick. Beam missile: 34 (680 blocks/s, Mach 2). */
     protected double guidanceSpeed() {
@@ -155,6 +161,11 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         }
         if (this.launchSpeed < 0.0 && !this.level().isClientSide()) {
             this.launchSpeed = this.getDeltaMovement().length();
+        }
+        if (!this.launchSettingsCaptured && !this.level().isClientSide()) {
+            this.launchSettingsCaptured = true;
+            this.verticalLaunch = FireControlLeadSettings.beamVerticalLaunch();
+            this.proximityRadius = FireControlLeadSettings.beamProximityRange();
         }
         // Keep the beam missile crawling during its 0.5s boost window so the
         // whole window covers at most 3 blocks, including the launch tick.
@@ -271,7 +282,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
 
     /** Whether this missile has the 0.5s low-speed high-agility launch boost (beam-riding missile only). */
     protected boolean hasLaunchBoost() {
-        return this.getType() == BeamMissileRegistry.BEAMRIDER_TANSHE.get();
+        return this.getType() == BeamMissileRegistry.BEAMRIDER_TANSHE.get() && this.verticalLaunch;
     }
 
     @Override
@@ -487,7 +498,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
 
     /** Explosion strength used when this missile detonates. */
     protected float explosionStrength() {
-        return 8.0F;
+        return 12.0F;
     }
 
     private ProximityHit findProximityTarget(Vec3 segStart, Vec3 segEnd) {
@@ -558,7 +569,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
                         || this.launchPosition != null && launchZone.contains(this.launchPosition)) {
                     continue;
                 }
-                if (segmentDistanceSqrToBox(segStart, segEnd, box) <= PROXIMITY_RADIUS * PROXIMITY_RADIUS) {
+            if (segmentDistanceSqrToBox(segStart, segEnd, box) <= this.proximityRadius * this.proximityRadius) {
                     return closestPointOnAABB(box, this.position());
                 }
             }
@@ -569,7 +580,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
     }
 
     private Vec3 findEntityTarget(Vec3 segStart, Vec3 segEnd) {
-        AABB searchBox = new AABB(segStart, segEnd).inflate(Math.max(PROXIMITY_RADIUS, 4.0));
+        AABB searchBox = new AABB(segStart, segEnd).inflate(Math.max(this.proximityRadius, 4.0));
         double bestAlongSqr = Double.MAX_VALUE;
         Vec3 bestPosition = null;
         for (Entity entity : this.level().getEntities(this, searchBox, e -> e != this && !e.isRemoved())) {
@@ -583,7 +594,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
             Vec3 missileStart = missileEnd.subtract(entity.getDeltaMovement());
             Vec3 closestOnShell = closestPointBetweenSegments(segStart, segEnd, missileStart, missileEnd);
             Vec3 closestOnMissile = closestPointOnSegment(missileStart, missileEnd, closestOnShell);
-            if (closestOnShell.distanceToSqr(closestOnMissile) <= PROXIMITY_RADIUS * PROXIMITY_RADIUS) {
+            if (closestOnShell.distanceToSqr(closestOnMissile) <= this.proximityRadius * this.proximityRadius) {
                 double alongSqr = closestOnShell.distanceToSqr(segStart);
                 if (alongSqr < bestAlongSqr) {
                     bestAlongSqr = alongSqr;
@@ -615,7 +626,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
             Vec3 missileStart = missileEnd.subtract(ShaolibBridge.velocity(instance));
             Vec3 closestOnShell = closestPointBetweenSegments(segStart, segEnd, missileStart, missileEnd);
             Vec3 closestOnMissile = closestPointOnSegment(missileStart, missileEnd, closestOnShell);
-            if (closestOnShell.distanceToSqr(closestOnMissile) <= PROXIMITY_RADIUS * PROXIMITY_RADIUS) {
+            if (closestOnShell.distanceToSqr(closestOnMissile) <= this.proximityRadius * this.proximityRadius) {
                 double alongSqr = closestOnShell.distanceToSqr(segStart);
                 if (alongSqr < bestAlongSqr) {
                     bestAlongSqr = alongSqr;

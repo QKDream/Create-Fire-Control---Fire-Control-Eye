@@ -1,6 +1,7 @@
 package com.qkdream.firecontrolcompat;
 
 import com.qkdream.firecontrolcompat.entity.BeamRidingMissileEntity;
+import com.qkdream.firecontrolcompat.entity.LoiteringMissileEntity;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.SubLevel;
@@ -49,6 +50,7 @@ public final class BeamMissileCompat {
     public static final String BEAM_AMMO_KEY = "fcbeamammo";
     public static final String IR_AA_AMMO_KEY = "fcirraammo";
     public static final String IR_RACK_KEY = "fcirrack";
+    public static final String LOITER_ATGM_AMMO_KEY = "fcloiter";
 
     public static final String AA_AMMO_KEY = "missileammo";
     public static final String ATGM_AMMO_KEY_1 = "missile1ammo";
@@ -70,6 +72,10 @@ public final class BeamMissileCompat {
 
     public static boolean isAircraftInfraredMissile(ItemStack stack) {
         return stack != null && !stack.isEmpty() && stack.getItem() == BeamMissileRegistry.AIRCRAFT_INFRARED_MISSILE.get();
+    }
+
+    public static boolean isLoiteringMunition(ItemStack stack) {
+        return stack != null && !stack.isEmpty() && stack.getItem() == BeamMissileRegistry.LOITERING_MUNITION.get();
     }
 
     public static ItemStack heldItem(Entity entity) {
@@ -208,7 +214,10 @@ public final class BeamMissileCompat {
     /** ATGM launcher family. Fills slot 1 then slot 2 up to the launcher's native capacity. */
     public static boolean tryLoadAtgm(LevelAccessor world, double x, double y, double z, Entity entity,
             double slot1Capacity, double slot2Capacity) {
-        if (!isBeamMissile(heldItem(entity))) {
+        ItemStack held = heldItem(entity);
+        boolean beam = isBeamMissile(held);
+        boolean loitering = isLoiteringMunition(held);
+        if (!beam && !loitering) {
             return false;
         }
         BlockPos pos = BlockPos.containing(x, y, z);
@@ -217,7 +226,13 @@ public final class BeamMissileCompat {
         }
         double slot1 = nbtDouble(world, pos, ATGM_AMMO_KEY_1);
         double slot2 = nbtDouble(world, pos, ATGM_AMMO_KEY_2);
-        if (nbtDouble(world, pos, BEAM_AMMO_KEY) <= 0.0 && (slot1 > 0.0 || slot2 > 0.0)) {
+        double beamAmmo = nbtDouble(world, pos, BEAM_AMMO_KEY);
+        double loiterAmmo = nbtDouble(world, pos, LOITER_ATGM_AMMO_KEY);
+        if (beamAmmo <= 0.0 && loiterAmmo <= 0.0 && (slot1 > 0.0 || slot2 > 0.0)) {
+            message(entity, "发射器已占用，请先清空");
+            return true;
+        }
+        if (beam && loiterAmmo > 0.0 || loitering && beamAmmo > 0.0) {
             message(entity, "发射器已占用，请先清空");
             return true;
         }
@@ -232,10 +247,15 @@ public final class BeamMissileCompat {
             return true;
         }
         double total = slot1 + slot2;
-        nbtPutDouble(world, pos, BEAM_AMMO_KEY, total);
         consumeHeld(entity);
         playLoadSound(world, pos);
-        message(entity, "已装填架束近炸导弹" + (int) total + "发");
+        if (loitering) {
+            nbtPutDouble(world, pos, LOITER_ATGM_AMMO_KEY, loiterAmmo + 1.0);
+            message(entity, "已装填小型巡飞弹" + (int) (loiterAmmo + 1.0) + "发");
+        } else {
+            nbtPutDouble(world, pos, BEAM_AMMO_KEY, total);
+            message(entity, "已装填架束近炸导弹" + (int) total + "发");
+        }
         sendBlockUpdated(world, pos);
         return true;
     }
@@ -247,7 +267,11 @@ public final class BeamMissileCompat {
         BlockPos pos = BlockPos.containing(x, y, z);
         double slot1 = nbtDouble(world, pos, ATGM_AMMO_KEY_1);
         double slot2 = nbtDouble(world, pos, ATGM_AMMO_KEY_2);
-        if (nbtDouble(world, pos, BEAM_AMMO_KEY) <= 0.0 || slot1 <= 0.0 && slot2 <= 0.0) {
+        double beamAmmo = nbtDouble(world, pos, BEAM_AMMO_KEY);
+        double loiterAmmo = nbtDouble(world, pos, LOITER_ATGM_AMMO_KEY);
+        boolean beam = beamAmmo > 0.0;
+        boolean loitering = loiterAmmo > 0.0;
+        if (!beam && !loitering || slot1 <= 0.0 && slot2 <= 0.0) {
             return false;
         }
         if (slot1 > 0.0) {
@@ -259,8 +283,48 @@ public final class BeamMissileCompat {
         }
         Direction direction = facing(world, pos);
         Vec3 muzzle = specialMuzzle ? atgmMainMuzzle(pos, direction) : simpleMuzzle(pos, direction, 2.6, 0.0);
-        spawnBeamMissile(world, pos, muzzle, direction, 3.0F, BeamMissileRegistry.BEAMRIDER_TANSHE.get(), null);
-        nbtPutDouble(world, pos, BEAM_AMMO_KEY, Math.max(0.0, slot1 + slot2));
+        if (loitering) {
+            if (!(world instanceof ServerLevel level)) {
+                return false;
+            }
+            LoiteringMissileEntity missile = BeamMissileRegistry.LOITERING_TANSHE.get().create(level);
+            if (missile == null) {
+                return false;
+            }
+            // Launchers sit on Sable ships: project the muzzle and the launch
+            // direction into world space exactly like the aircraft rack path,
+            // otherwise the missile alternates between sublevel-local and
+            // world velocity every tick and flies the wrong way.
+            Vec3 worldMuzzle = Sable.HELPER.projectOutOfSubLevel(level, muzzle);
+            Vec3 localForward = muzzle.add(direction.getStepX(), direction.getStepY(), direction.getStepZ());
+            Vec3 worldForward = Sable.HELPER.projectOutOfSubLevel(level, localForward);
+            Vec3 worldDirection = worldForward.subtract(worldMuzzle);
+            if (worldDirection.lengthSqr() < 1.0E-8) {
+                worldDirection = new Vec3(direction.getStepX(), direction.getStepY(), direction.getStepZ());
+            }
+            worldDirection = worldDirection.normalize();
+            missile.markLaunchSource(pos);
+            missile.setLaunchProfile(worldDirection, 3.0);
+            missile.setPos(worldMuzzle.x, worldMuzzle.y, worldMuzzle.z);
+            missile.shoot(worldDirection.x, worldDirection.y + 0.05, worldDirection.z, 3.0F, 0.0F);
+            missile.setBaseDamage(20.0F);
+            missile.setSilent(true);
+            MissileGuidanceData.copyFromLauncher(world, pos, missile);
+            markLaunchSubLevel(missile, level, pos);
+            boolean added = level.addFreshEntity(missile);
+            missile.moveTo(worldMuzzle.x, worldMuzzle.y, worldMuzzle.z);
+            Vec3 velocity = missile.getDeltaMovement();
+            missile.setYRot((float) Math.toDegrees(Mth.atan2(velocity.x, velocity.z)));
+            missile.setXRot((float) Math.toDegrees(Mth.atan2(velocity.y, velocity.horizontalDistance())));
+            missile.bindNearestController(level, pos);
+            FireControlCompat.LOGGER.info(
+                    "[firecontrolcompat] loitering munition fired added={} pos={} delta={} removed={}",
+                    added, missile.position(), missile.getDeltaMovement(), missile.isRemoved());
+            nbtPutDouble(world, pos, LOITER_ATGM_AMMO_KEY, Math.max(0.0, loiterAmmo - 1.0));
+        } else {
+            spawnBeamMissile(world, pos, muzzle, direction, 3.0F, BeamMissileRegistry.BEAMRIDER_TANSHE.get(), null);
+            nbtPutDouble(world, pos, BEAM_AMMO_KEY, Math.max(0.0, slot1 + slot2));
+        }
         playLaunchSound(world, pos, 5.0F, 0.8F);
         sendBlockUpdated(world, pos);
         return true;

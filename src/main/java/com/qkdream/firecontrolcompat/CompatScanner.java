@@ -51,13 +51,14 @@ public final class CompatScanner {
             if (isOwnFireControlOrdnance(entity)) {
                 return;
             }
-            if (MianbaoAirDefenseCompat.isMissile(entity)
+            boolean ownMissile = TargetClassifier.isCompatMissile(entity);
+            if (!ownMissile && (MianbaoAirDefenseCompat.isMissile(entity)
                     || MianbaoMissileCompat.isGuidedMissile(entity)
                     || MianbaoCruiseMissileCompat.isRadarMissile(entity)
-                    || MianbaoAircraftCompat.isAirToGroundMissile(entity)) {
+                    || MianbaoAircraftCompat.isAirToGroundMissile(entity))) {
                 return;
             }
-            if (!TargetClassifier.isCompatMissile(entity)) {
+            if (!ownMissile) {
                 return;
             }
             Vec3 center = MianbaoMissileCompat.getWorldPosition(entity);
@@ -102,10 +103,14 @@ public final class CompatScanner {
             if (!visited.add(entity.getUUID()) || existing.contains(entity.getUUID())) {
                 return;
             }
-            if (isOwnFireControlOrdnance(entity) || MianbaoAirDefenseCompat.isMissile(entity)) {
+            if (isOwnFireControlOrdnance(entity)) {
                 return;
             }
-            if (!TargetClassifier.isCompatMissile(entity)) {
+            boolean ownMissile = TargetClassifier.isCompatMissile(entity);
+            if (!ownMissile && MianbaoAirDefenseCompat.isMissile(entity)) {
+                return;
+            }
+            if (!ownMissile) {
                 return;
             }
             Vec3 center = MianbaoMissileCompat.getWorldPosition(entity);
@@ -126,9 +131,15 @@ public final class CompatScanner {
     }
 
     private static boolean isOwnFireControlOrdnance(Entity entity) {
-        return entity.getPersistentData().getBoolean("CreateFireControlDisplayGuided")
+        boolean flagged = entity.getPersistentData().getBoolean("CreateFireControlDisplayGuided")
                 || entity.getPersistentData().getBoolean("CreateFireControlAaGuided")
                 || entity.getPersistentData().getBoolean("CreateFireControlIntercepted");
+        if (!flagged) {
+            return false;
+        }
+        // The heavy air-defense missile must remain a visible missile threat
+        // so the automatic missile defense can engage it.
+        return !TargetClassifier.isHeavyAaMissile(entity);
     }
 
     private interface EntityConsumer {

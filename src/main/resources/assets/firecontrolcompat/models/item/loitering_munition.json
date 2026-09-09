@@ -1,0 +1,6 @@
+{
+  "parent": "firecontrolcompat:entity/loitering_munition",
+  "textures": {
+    "particle": "firecontrolcompat:block/loitering_texture"
+  }
+}

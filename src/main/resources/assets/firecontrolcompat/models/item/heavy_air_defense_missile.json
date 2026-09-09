@@ -1,0 +1,7 @@
+{
+  "parent": "mianbaos_modernwarfare:custom/lu_ji_xun_hang_dao_dan_",
+  "textures": {
+    "0": "mianbaos_modernwarfare:block/lu_ji_xun_hang_dao_dan_",
+    "particle": "mianbaos_modernwarfare:item/lu_ji_xun_hang_dao_dan_"
+  }
+}

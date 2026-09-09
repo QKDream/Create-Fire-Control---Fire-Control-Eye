@@ -45,7 +45,23 @@ public final class TargetClassifier {
                     || path.startsWith("agm_")
                     || path.startsWith("jdam");
         }
+        // Fire Control Eye's own projectiles: beam-rider, infrared (ground/air),
+        // small loitering munition and heavy air-defense missile.
+        if ("firecontrolcompat".equals(namespace)) {
+            return path.contains("tanshe");
+        }
         return false;
+    }
+
+    /** The heavy air-defense missile stays interceptable even while fire control guides it. */
+    public static boolean isHeavyAaMissile(Entity entity) {
+        if (entity == null) {
+            return false;
+        }
+        ResourceLocation id = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType());
+        return id != null
+                && "firecontrolcompat".equals(id.getNamespace())
+                && "heavy_aa_tanshe".equals(id.getPath());
     }
 
     private static boolean hasClassFragment(Entity entity, String... fragments) {

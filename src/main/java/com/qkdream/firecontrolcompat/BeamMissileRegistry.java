@@ -2,9 +2,13 @@ package com.qkdream.firecontrolcompat;
 
 import com.qkdream.firecontrolcompat.client.AircraftInfraredMissileRenderer;
 import com.qkdream.firecontrolcompat.client.BeamMissileRenderer;
+import com.qkdream.firecontrolcompat.client.HeavyAaMissileRenderer;
+import com.qkdream.firecontrolcompat.client.LoiteringMissileRenderer;
 import com.qkdream.firecontrolcompat.entity.AircraftInfraredMissileEntity;
 import com.qkdream.firecontrolcompat.entity.BeamRidingMissileEntity;
+import com.qkdream.firecontrolcompat.entity.HeavyAirDefenseMissileEntity;
 import com.qkdream.firecontrolcompat.entity.InfraredMissileEntity;
+import com.qkdream.firecontrolcompat.entity.LoiteringMissileEntity;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.EntityType;
@@ -37,6 +41,12 @@ public final class BeamMissileRegistry {
     public static final DeferredHolder<Item, Item> AIRCRAFT_INFRARED_MISSILE =
             ITEMS.register("aircraft_infrared_missile",
                     () -> new FireControlMissileItem("item.firecontrolcompat.aircraft_infrared_missile"));
+    public static final DeferredHolder<Item, Item> LOITERING_MUNITION =
+            ITEMS.register("loitering_munition",
+                    () -> new FireControlMissileItem("item.firecontrolcompat.loitering_munition"));
+    public static final DeferredHolder<Item, Item> HEAVY_AIR_DEFENSE_MISSILE =
+            ITEMS.register("heavy_air_defense_missile",
+                    () -> new FireControlMissileItem("item.firecontrolcompat.heavy_air_defense_missile"));
 
     public static final DeferredHolder<EntityType<?>, EntityType<BeamRidingMissileEntity>> BEAMRIDER_TANSHE =
             ENTITY_TYPES.register("beamrider_tanshe",
@@ -62,6 +72,22 @@ public final class BeamMissileRegistry {
                             .updateInterval(20)
                             .build("aircraft_infrared_tanshe"));
 
+    public static final DeferredHolder<EntityType<?>, EntityType<LoiteringMissileEntity>> LOITERING_TANSHE =
+            ENTITY_TYPES.register("loitering_tanshe",
+                    () -> EntityType.Builder.<LoiteringMissileEntity>of(LoiteringMissileEntity::new, MobCategory.MISC)
+                            .sized(0.6F, 0.6F)
+                            .clientTrackingRange(8)
+                            .updateInterval(20)
+                            .build("loitering_tanshe"));
+
+    public static final DeferredHolder<EntityType<?>, EntityType<HeavyAirDefenseMissileEntity>> HEAVY_AA_TANSHE =
+            ENTITY_TYPES.register("heavy_aa_tanshe",
+                    () -> EntityType.Builder.<HeavyAirDefenseMissileEntity>of(HeavyAirDefenseMissileEntity::new, MobCategory.MISC)
+                            .sized(0.6F, 0.6F)
+                            .clientTrackingRange(8)
+                            .updateInterval(20)
+                            .build("heavy_aa_tanshe"));
+
     public static final DeferredHolder<CreativeModeTab, CreativeModeTab> FIRE_CONTROL_EYE_TAB =
             CREATIVE_TABS.register("fire_control_eye",
                     () -> CreativeModeTab.builder()
@@ -71,6 +97,8 @@ public final class BeamMissileRegistry {
                                 output.accept(BEAM_RIDING_MISSILE.get());
                                 output.accept(INFRARED_MISSILE.get());
                                 output.accept(AIRCRAFT_INFRARED_MISSILE.get());
+                                output.accept(LOITERING_MUNITION.get());
+                                output.accept(HEAVY_AIR_DEFENSE_MISSILE.get());
                             })
                             .build());
 
@@ -89,6 +117,8 @@ public final class BeamMissileRegistry {
         event.registerEntityRenderer(BEAMRIDER_TANSHE.get(), BeamMissileRenderer::new);
         event.registerEntityRenderer(INFRARED_TANSHE.get(), BeamMissileRenderer::new);
         event.registerEntityRenderer(AIRCRAFT_INFRARED_TANSHE.get(), AircraftInfraredMissileRenderer::new);
+        event.registerEntityRenderer(LOITERING_TANSHE.get(), LoiteringMissileRenderer::new);
+        event.registerEntityRenderer(HEAVY_AA_TANSHE.get(), HeavyAaMissileRenderer::new);
     }
 
     private static void addCreativeTabItems(BuildCreativeModeTabContentsEvent event) {
@@ -98,6 +128,8 @@ public final class BeamMissileRegistry {
             event.accept(BEAM_RIDING_MISSILE.get());
             event.accept(INFRARED_MISSILE.get());
             event.accept(AIRCRAFT_INFRARED_MISSILE.get());
+            event.accept(LOITERING_MUNITION.get());
+            event.accept(HEAVY_AIR_DEFENSE_MISSILE.get());
         }
     }
 }

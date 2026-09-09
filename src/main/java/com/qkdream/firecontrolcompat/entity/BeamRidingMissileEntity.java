@@ -92,6 +92,11 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         return GUIDANCE_OVERLOAD_G;
     }
 
+    /** Proximity fuse range captured once at launch; overridable per missile. */
+    protected double initialProximityRadius() {
+        return FireControlLeadSettings.beamProximityRange();
+    }
+
     public BeamRidingMissileEntity(EntityType<? extends AbstractArrow> type, Level level) {
         super(type, level);
         this.setPickupItemStack(new ItemStack(this.missileItem()));
@@ -165,7 +170,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         if (!this.launchSettingsCaptured && !this.level().isClientSide()) {
             this.launchSettingsCaptured = true;
             this.verticalLaunch = FireControlLeadSettings.beamVerticalLaunch();
-            this.proximityRadius = FireControlLeadSettings.beamProximityRange();
+            this.proximityRadius = this.initialProximityRadius();
         }
         // Keep the beam missile crawling during its 0.5s boost window so the
         // whole window covers at most 3 blocks, including the launch tick.
@@ -238,13 +243,13 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
             return;
         }
 
-        if (this.hasLaunchBoost() && engine <= BOOST_TURN_TICKS) {
+        if (!this.fireControlAirDefenseGuided() && this.hasLaunchBoost() && engine <= BOOST_TURN_TICKS) {
             Vec3 velocity = this.getDeltaMovement();
             double speed = velocity.length();
             if (speed > BOOST_MAX_SPEED) {
                 this.setDeltaMovement(velocity.scale(BOOST_MAX_SPEED / speed));
             }
-        } else if (engine <= ACCEL_TICKS) {
+        } else if (!this.fireControlAirDefenseGuided() && engine <= ACCEL_TICKS) {
             double desired = this.accelerationTargetSpeed(engine);
             Vec3 velocity = this.getDeltaMovement();
             double speed = velocity.length();
@@ -283,6 +288,12 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
     /** Whether this missile has the 0.5s low-speed high-agility launch boost (beam-riding missile only). */
     protected boolean hasLaunchBoost() {
         return this.getType() == BeamMissileRegistry.BEAMRIDER_TANSHE.get() && this.verticalLaunch;
+    }
+
+    /** Whether fire control's air-defense guidance has adopted this missile. */
+    protected boolean fireControlAirDefenseGuided() {
+        return this.getPersistentData().getBoolean("CreateFireControlAaGuided")
+                || this.getPersistentData().getBoolean("CreateFireControlDisplayGuided");
     }
 
     @Override
@@ -476,7 +487,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         return closestPointOnSegment(from, to, hitLocation).distanceToSqr(hitLocation) <= 4.0;
     }
 
-    private void detonate(Vec3 position, String cause) {
+    public void detonate(Vec3 position, String cause) {
         if (this.level().isClientSide()) {
             return;
         }
@@ -502,9 +513,14 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
     }
 
     private ProximityHit findProximityTarget(Vec3 segStart, Vec3 segEnd) {
-        Vec3 target = this.findSableTarget(segStart, segEnd);
-        if (target != null) {
-            return new ProximityHit(target, "sable");
+        Vec3 target;
+        // Fire control's AA guidance owns the Sable structure fuse; the local
+        // fuse keeps detonating on entity / Shaolib munitions only.
+        if (!this.fireControlAirDefenseGuided()) {
+            target = this.findSableTarget(segStart, segEnd);
+            if (target != null) {
+                return new ProximityHit(target, "sable");
+            }
         }
         target = this.findEntityTarget(segStart, segEnd);
         if (target != null) {

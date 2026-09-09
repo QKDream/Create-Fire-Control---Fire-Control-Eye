@@ -5,7 +5,7 @@ issueTrackerURL="https://github.com/QKDream/Create-Fire-Control---Fire-Control-E
 
 [[mods]]
 modId="firecontrolcompat"
-version="1.2.0"
+version="1.3.0"
 displayName="机械动力：先进火控：火控之眼 (Create: Fire Control - Fire Control Eye)"
 description='''
 让机械动力火炮·先进火控的显示连接器雷达/自动反导与火控计算机雷达识别并锁定 vestalihy、CBCMS（航空炸弹/鱼雷/火箭弹/深水炸弹）以及 TAOV（地狱火/Tau）等弹药；新增架束近炸导弹与红外锁定导弹（地面型/空射型），并补齐 TWS 多目标跟踪、光电锁定弹药、目标类型标注与提前量指示。

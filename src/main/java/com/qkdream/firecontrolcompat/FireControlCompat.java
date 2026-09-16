@@ -8,6 +8,7 @@ import com.qkdream.firecontrolcompat.network.SeekerHudPayload;
 import org.slf4j.LoggerFactory;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
+import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import org.slf4j.Logger;
@@ -19,7 +20,9 @@ public final class FireControlCompat {
 
     public FireControlCompat(IEventBus modEventBus, ModContainer container) {
         ShaolibBridge.resolve();
-        CbcAutocannonPayloads.markerType();
+        if (isModLoaded("shaolib") && isModLoaded("taov_weapons")) {
+            CbcAutocannonPayloads.markerType();
+        }
         BeamMissileRegistry.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(ContactTypePayload::register);
@@ -30,7 +33,20 @@ public final class FireControlCompat {
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {
-        MianbaoWeaponHud.registerSources();
+        if (isModLoaded("taov_core")) {
+            MianbaoWeaponHud.registerSources();
+            CbcAmmoRackHud.registerSources();
+        }
+        SynaxisSeatViewPortCompat.register();
+    }
+
+    /** True when the given mod is present. Safe to call during mod construction. */
+    public static boolean isModLoaded(String modId) {
+        try {
+            return ModList.get().isLoaded(modId);
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 }
 

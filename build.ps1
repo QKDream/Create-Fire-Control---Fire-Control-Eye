@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
-$ws = $PSScriptRoot
+$ws = "C:/Users/1/Documents/Codex/2026-08-07/zhe/cbc-addon/firecontrolcompat"
 $mcLib = "D:/.minecraft/libraries"
-$versionRoot = Get-ChildItem "D:/.minecraft/versions" -Directory | Where-Object { Test-Path (Join-Path $_.FullName "mods/create-fire-control-0.7.0.jar") } | Select-Object -First 1
+$versionRoot = Get-ChildItem "D:/.minecraft/versions" -Directory | Where-Object { Test-Path (Join-Path $_.FullName "mods/create-fire-control-0.7.1.jar") } | Select-Object -First 1
 if (-not $versionRoot) { Write-Host "No version dir with create-fire-control found"; exit 1 }
 $modsDir = Join-Path $versionRoot.FullName "mods"
 Write-Host "Using mods dir: $modsDir"
@@ -12,18 +12,22 @@ $cpDir = "$ws/build/modscp"
 try { if (Test-Path $cpDir) { Remove-Item -Recurse -Force $cpDir -ErrorAction SilentlyContinue } } catch { Write-Host 'modscp cleanup deferred' }
 New-Item -ItemType Directory -Force $cpDir | Out-Null
 $wantedMods = @(
-    "create-fire-control-0.7.0.jar",
+    "create-fire-control-0.7.1.jar",
     "sable-neoforge-1.21.1-2.0.5.jar",
     "shaolib-0.1.0.jar",
     "shaolib_munitions-0.1.0.jar",
     "synaxis-1.5.0.jar",
     "taov_core-0.1.0.jar",
     "taov_weapons-0.1.1.jar",
-    "mianbaos_modernwarfare-2.5.0-neoforge.jar"
+    "mianbaos_modernwarfare-2.5.1-neoforge.jar"
 )
 foreach ($name in $wantedMods) {
     $src = Join-Path $modsDir $name
     if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $cpDir }
+}
+if (-not (Test-Path -LiteralPath (Join-Path $cpDir "mianbaos_modernwarfare-2.5.1-neoforge.jar"))) {
+    $mianbaoJar = Get-ChildItem -LiteralPath $modsDir -Filter "mianbaos_modernwarfare-*.jar" | Sort-Object Name | Select-Object -First 1
+    if ($mianbaoJar) { Copy-Item -LiteralPath $mianbaoJar.FullName -Destination (Join-Path $cpDir $mianbaoJar.Name) }
 }
 $sableJar = Join-Path $cpDir "sable-neoforge-1.21.1-2.0.5.jar"
 if (Test-Path -LiteralPath $sableJar) {
@@ -104,7 +108,7 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item -Recurse -Force "$outDir/*" $stage
 Copy-Item -Recurse -Force "$ws/src/main/resources/*" $stage
 
-$jarOut = "$ws/firecontrolcompat-1.2.0.jar"
+$jarOut = "$ws/firecontrolcompat-1.30fix.jar"
 Push-Location $stage
 & $jarExe cf $jarOut *
 $jarExit = $LASTEXITCODE

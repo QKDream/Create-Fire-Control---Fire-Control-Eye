@@ -2,6 +2,7 @@
   "required": true,
   "minVersion": "0.8.5",
   "package": "com.qkdream.firecontrolcompat.mixin",
+  "plugin": "com.qkdream.firecontrolcompat.FireControlCompatMixinPlugin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
     "ConnectedDisplayScanMixin",
@@ -22,7 +23,6 @@
     "TaovGunBindingMixin",
     "TaovGunCannonMountMixin",
     "TaovGunBallisticsMixin",
-    "TaovGunAimMixin",
     "AaLauncherLoadMixin",
     "AaLauncherSecondLoadMixin",
     "AaLauncherFireMixin",
@@ -41,7 +41,8 @@
     "AircraftIrFreeFireMixin",
     "AircraftWeaponNameMixin",
     "RackLoadMixin",
-    "MianbaoWeaponHudPersistMixin",
+    "WeaponHudBindingPersistMixin",
+    "CbcAmmoRackLinkerUseMixin",
     "MianbaoAirDefenseCompatMixin",
     "GroundMissileLauncherLoadMixin",
     "GroundMissileLauncherFireMixin",
@@ -49,10 +50,7 @@
     "AutoDefenseDisplayBindingRedirectMixin",
     "HeavyAirDefenseSpeedMixin",
     "LoiteringSpeedMixin",
-    "HeavyAirDefenseDisplaySpeedMixin",
-    "SynaxisBearingBindingMixin",
-    "ControllerSynaxisBearingMixin",
-    "ConnectedDisplaySynaxisBearingMixin"
+    "HeavyAirDefenseDisplaySpeedMixin"
   ],
   "client": [
     "RadarHudLockLabelMixin",

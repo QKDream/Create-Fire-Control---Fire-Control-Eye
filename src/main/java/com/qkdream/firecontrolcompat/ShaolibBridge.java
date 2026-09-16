@@ -1,48 +1,40 @@
 package com.qkdream.firecontrolcompat;
 
-import java.lang.reflect.Method;
+import com.verr1.shaolib.api.projectile.ProjectileHandle;
+import com.verr1.shaolib.api.projectile.ProjectileInstance;
+import com.verr1.shaolib.api.projectile.ShaolibProjectiles;
+import com.verr1.shaolib.munitions.projectile.guided.GuidedMissileState;
 import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.fml.ModList;
 
 /**
- * Reflection bridge to Shaolib (taov_weapons). Tau and Hellfire are not
- * Minecraft entities: they live in Shaolib's global projectile registry as
- * {@code ProjectileInstance}s. Everything here is reflective so this mod
- * compiles and runs even without taov_weapons / shaolib installed.
+ * Bridge to Shaolib (taov_weapons) through its public projectile API. Tau and
+ * Hellfire are not Minecraft entities: they live in Shaolib's global
+ * projectile registry as {@code ProjectileInstance}s. Presence is detected
+ * with {@link ModList} so this mod still loads without taov_weapons / shaolib
+ * installed, and every accessor falls back to a safe default when the API is
+ * unavailable.
  *
  * <p>Each in-flight Tau/Hellfire is exposed to fire-control as a synthetic
  * UUID built from {@code new UUID(SHAOLIB_MARKER, instanceId)} so it can be
  * stored in the existing radar contact / lock pipelines unchanged.</p>
+ *
+ * <p>Every Shaolib typed access lives in the nested {@link Access} holder,
+ * which is only loaded once the library is known to be installed. This class
+ * itself therefore links and verifies fine when shaolib is missing.</p>
  */
 public final class ShaolibBridge {
 
     /** ASCII bytes of "SHAOLIB" packed into the most significant bits of synthetic UUIDs. */
     public static final long SHAOLIB_MARKER = 0x5348414F4C49424CL;
 
-    private static final String PROJECTILES = "com.verr1.shaolib.api.projectile.ShaolibProjectiles";
-    private static final String INSTANCE = "com.verr1.shaolib.api.projectile.ProjectileInstance";
-    private static final String TYPE = "com.verr1.shaolib.api.projectile.ProjectileType";
-    private static final String HANDLE = "com.verr1.shaolib.api.projectile.ProjectileHandle";
-    private static final String GUIDED_STATE = "com.verr1.shaolib.munitions.projectile.guided.GuidedMissileState";
-
     private static volatile boolean resolved;
-    private static Class<?> guidedStateClass;
-    private static Method activeProjectiles;
-    private static Method instanceIsAlive;
-    private static Method instanceIsDiscarded;
-    private static Method instanceDimensionId;
-    private static Method instanceType;
-    private static Method instancePosition;
-    private static Method instancePreviousPosition;
-    private static Method instanceId;
-    private static Method typeId;
-    private static Method getHandle;
-    private static Method handleState;
-    private static Method handleDiscard;
-    private static Method guidedRequestDetonate;
+    private static volatile boolean available;
 
     private ShaolibBridge() {
     }
@@ -52,165 +44,45 @@ public final class ShaolibBridge {
             return;
         }
         resolved = true;
-        try {
-            ClassLoader loader = loader();
-            Class<?> projectsClass = Class.forName(PROJECTILES, false, loader);
-            Class<?> instanceClass = Class.forName(INSTANCE, false, loader);
-            Class<?> typeClass = Class.forName(TYPE, false, loader);
-            Class<?> handleClass = Class.forName(HANDLE, false, loader);
-            try {
-                guidedStateClass = Class.forName(GUIDED_STATE, false, loader);
-            } catch (Throwable ignored) {
-                guidedStateClass = null;
-            }
-
-            activeProjectiles = projectsClass.getMethod("activeProjectiles");
-            instanceIsAlive = instanceClass.getMethod("isAlive");
-            instanceIsDiscarded = instanceClass.getMethod("isDiscarded");
-            instanceDimensionId = instanceClass.getMethod("dimensionId");
-            instanceType = instanceClass.getMethod("type");
-            instancePosition = instanceClass.getMethod("position");
-            instancePreviousPosition = instanceClass.getMethod("previousPosition");
-            instanceId = instanceClass.getMethod("id");
-            typeId = typeClass.getMethod("id");
-            getHandle = projectsClass.getMethod("getHandle", long.class);
-            handleState = handleClass.getMethod("state");
-            handleDiscard = handleClass.getMethod("discard", String.class);
-            if (guidedStateClass != null) {
-                guidedRequestDetonate = guidedStateClass.getMethod("requestDetonateIfArmed");
-            }
-            FireControlCompat.LOGGER.info("[firecontrolcompat] Shaolib bridge resolved (taov tau/hellfire tracking enabled)");
-        } catch (Throwable t) {
-            activeProjectiles = null;
-            FireControlCompat.LOGGER.info("[firecontrolcompat] Shaolib bridge unavailable, TAOV tracking disabled: {}", t.toString());
+        available = ModList.get().isLoaded("shaolib");
+        if (available) {
+            FireControlCompat.LOGGER.info("[firecontrolcompat] Shaolib detected (taov tau/hellfire tracking enabled)");
+        } else {
+            FireControlCompat.LOGGER.info("[firecontrolcompat] Shaolib not installed, TAOV tracking disabled");
         }
-    }
-
-    private static ClassLoader loader() {
-        ClassLoader context = Thread.currentThread().getContextClassLoader();
-        ClassLoader own = ShaolibBridge.class.getClassLoader();
-        ClassLoader system = ClassLoader.getSystemClassLoader();
-        for (ClassLoader candidate : new ClassLoader[]{context, own, system}) {
-            if (candidate != null) {
-                return candidate;
-            }
-        }
-        return ClassLoader.getSystemClassLoader();
     }
 
     public static boolean available() {
-        return activeProjectiles != null;
+        return available;
     }
 
-    @SuppressWarnings("unchecked")
-    public static Collection<Object> activeInstances() {
-        if (activeProjectiles == null) {
-            return java.util.List.of();
-        }
-        try {
-            Object result = activeProjectiles.invoke(null);
-            return result instanceof Collection<?> collection ? (Collection<Object>) collection : java.util.List.of();
-        } catch (Throwable t) {
-            return java.util.List.of();
-        }
+    /** Live Shaolib projectiles, or an empty collection when shaolib is absent. */
+    public static Collection<?> activeInstances() {
+        return available ? Access.activeInstances() : List.of();
     }
 
     public static boolean isTauOrHellfire(Object instance) {
-        try {
-            if (instanceType == null || typeId == null) {
-                return false;
-            }
-            Object type = instanceType.invoke(instance);
-            if (type == null) {
-                return false;
-            }
-            Object id = typeId.invoke(type);
-            if (!(id instanceof ResourceLocation location)) {
-                return false;
-            }
-            if (!"taov_weapons".equals(location.getNamespace())) {
-                return false;
-            }
-            String path = location.getPath();
-            return "tau_missile".equals(path) || "hellfire_missile".equals(path) || "hell_fire_missile".equals(path);
-        } catch (Throwable t) {
-            return false;
-        }
+        return available && instance != null && Access.isTauOrHellfire(instance);
     }
 
     public static boolean isAlive(Object instance) {
-        try {
-            if (instanceIsAlive == null) {
-                return false;
-            }
-            Object result = instanceIsAlive.invoke(instance);
-            if (!(result instanceof Boolean alive) || !alive) {
-                return false;
-            }
-            if (instanceIsDiscarded != null) {
-                Object discarded = instanceIsDiscarded.invoke(instance);
-                if (discarded instanceof Boolean isDiscarded && isDiscarded) {
-                    return false;
-                }
-            }
-            return true;
-        } catch (Throwable t) {
-            return false;
-        }
+        return available && instance != null && Access.isAlive(instance);
     }
 
     public static String dimensionId(Object instance) {
-        try {
-            if (instanceDimensionId == null) {
-                return null;
-            }
-            Object result = instanceDimensionId.invoke(instance);
-            return result == null ? null : result.toString();
-        } catch (Throwable t) {
-            return null;
-        }
+        return available && instance != null ? Access.dimensionId(instance) : null;
     }
 
     public static long idOf(Object instance) {
-        try {
-            if (instanceId == null) {
-                return -1L;
-            }
-            Object result = instanceId.invoke(instance);
-            return result instanceof Number number ? number.longValue() : -1L;
-        } catch (Throwable t) {
-            return -1L;
-        }
+        return available && instance != null ? Access.idOf(instance) : -1L;
     }
 
     public static Vec3 position(Object instance) {
-        try {
-            if (instancePosition == null) {
-                return null;
-            }
-            Object result = instancePosition.invoke(instance);
-            return result instanceof Vec3 position ? position : null;
-        } catch (Throwable t) {
-            return null;
-        }
+        return available && instance != null ? Access.position(instance) : null;
     }
 
     public static Vec3 velocity(Object instance) {
-        Vec3 current = position(instance);
-        Vec3 previous = null;
-        try {
-            if (instancePreviousPosition != null) {
-                Object result = instancePreviousPosition.invoke(instance);
-                if (result instanceof Vec3 position) {
-                    previous = position;
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        if (current == null) {
-            return Vec3.ZERO;
-        }
-        return previous == null ? Vec3.ZERO : current.subtract(previous);
+        return available && instance != null ? Access.velocity(instance) : Vec3.ZERO;
     }
 
     public static UUID uuidFor(Object instance) {
@@ -231,19 +103,7 @@ public final class ShaolibBridge {
 
     /** Finds the live Tau/Hellfire instance carrying the given synthetic UUID. */
     public static Object findInstance(UUID id) {
-        if (!isShaolibId(id)) {
-            return null;
-        }
-        long wanted = idFromUuid(id);
-        for (Object instance : activeInstances()) {
-            if (instance == null) {
-                continue;
-            }
-            if (idOf(instance) == wanted && isTauOrHellfire(instance)) {
-                return instance;
-            }
-        }
-        return null;
+        return available && isShaolibId(id) ? Access.findInstance(idFromUuid(id)) : null;
     }
 
     public static boolean isAlive(UUID id) {
@@ -262,29 +122,127 @@ public final class ShaolibBridge {
      * cbcmsmwcompat cooks off the same munitions.
      */
     public static void detonate(UUID id) {
-        if (!isShaolibId(id) || getHandle == null) {
-            return;
+        if (available && isShaolibId(id)) {
+            Access.detonate(idFromUuid(id), id);
         }
-        try {
-            Object handleOptional = getHandle.invoke(null, idFromUuid(id));
-            if (!(handleOptional instanceof Optional<?> optional) || optional.isEmpty()) {
-                return;
+    }
+
+    /** Shaolib typed access, loaded only while shaolib is installed. */
+    private static final class Access {
+
+        private Access() {
+        }
+
+        static Collection<ProjectileInstance> activeInstances() {
+            try {
+                return ShaolibProjectiles.activeProjectiles();
+            } catch (Throwable t) {
+                return List.of();
             }
-            Object handle = optional.get();
-            if (handleState != null && guidedStateClass != null && guidedRequestDetonate != null) {
+        }
+
+        static boolean isTauOrHellfire(Object instance) {
+            if (!(instance instanceof ProjectileInstance projectile)) {
+                return false;
+            }
+            try {
+                ResourceLocation location = projectile.type().id();
+                if (!"taov_weapons".equals(location.getNamespace())) {
+                    return false;
+                }
+                String path = location.getPath();
+                return "tau_missile".equals(path) || "hellfire_missile".equals(path) || "hell_fire_missile".equals(path);
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+
+        static boolean isAlive(Object instance) {
+            if (!(instance instanceof ProjectileInstance projectile)) {
+                return false;
+            }
+            try {
+                return projectile.isAlive() && !projectile.isDiscarded();
+            } catch (Throwable t) {
+                return false;
+            }
+        }
+
+        static String dimensionId(Object instance) {
+            if (!(instance instanceof ProjectileInstance projectile)) {
+                return null;
+            }
+            try {
+                return projectile.dimensionId();
+            } catch (Throwable t) {
+                return null;
+            }
+        }
+
+        static long idOf(Object instance) {
+            if (!(instance instanceof ProjectileInstance projectile)) {
+                return -1L;
+            }
+            try {
+                return projectile.id();
+            } catch (Throwable t) {
+                return -1L;
+            }
+        }
+
+        static Vec3 position(Object instance) {
+            if (!(instance instanceof ProjectileInstance projectile)) {
+                return null;
+            }
+            try {
+                return projectile.position();
+            } catch (Throwable t) {
+                return null;
+            }
+        }
+
+        static Vec3 velocity(Object instance) {
+            Vec3 current = position(instance);
+            Vec3 previous = null;
+            if (instance instanceof ProjectileInstance projectile) {
                 try {
-                    Object state = handleState.invoke(handle);
-                    if (guidedStateClass.isInstance(state)) {
-                        guidedRequestDetonate.invoke(state);
-                    }
+                    previous = projectile.previousPosition();
                 } catch (Throwable ignored) {
                 }
             }
-            if (handleDiscard != null) {
-                handleDiscard.invoke(handle, "firecontrolcompat:intercepted");
+            if (current == null) {
+                return Vec3.ZERO;
             }
-        } catch (Throwable t) {
-            FireControlCompat.LOGGER.debug("[firecontrolcompat] Shaolib detonate failed for {}", id, t);
+            return previous == null ? Vec3.ZERO : current.subtract(previous);
+        }
+
+        static Object findInstance(long wanted) {
+            for (ProjectileInstance instance : activeInstances()) {
+                if (instance != null && instance.id() == wanted && isTauOrHellfire(instance)) {
+                    return instance;
+                }
+            }
+            return null;
+        }
+
+        static void detonate(long id, UUID uuid) {
+            try {
+                Optional<ProjectileHandle<?>> handleOptional = ShaolibProjectiles.getHandle(id);
+                if (handleOptional.isEmpty()) {
+                    return;
+                }
+                ProjectileHandle<?> handle = handleOptional.get();
+                try {
+                    Object state = handle.state();
+                    if (state instanceof GuidedMissileState guided) {
+                        guided.requestDetonateIfArmed();
+                    }
+                } catch (Throwable ignored) {
+                }
+                handle.discard("firecontrolcompat:intercepted");
+            } catch (Throwable t) {
+                FireControlCompat.LOGGER.debug("[firecontrolcompat] Shaolib detonate failed for {}", uuid, t);
+            }
         }
     }
 }

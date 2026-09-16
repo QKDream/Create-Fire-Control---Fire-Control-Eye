@@ -1,6 +1,6 @@
 package com.qkdream.firecontrolcompat.mixin;
 
-import com.qkdream.firecontrolcompat.MianbaoWeaponHud;
+import com.qkdream.firecontrolcompat.WeaponHudLinker;
 import net.mcreator.myfirstmod.block.AntiairmissilelauncherblockBlock;
 import net.mcreator.myfirstmod.block.AntiairmissilelauncherleftBlock;
 import net.mcreator.myfirstmod.block.AntiairmissilelauncherrightBlock;
@@ -88,7 +88,7 @@ public abstract class MianbaoLauncherLinkerUseMixin {
             Player player,
             BlockHitResult hit,
             CallbackInfoReturnable<InteractionResult> cir) {
-        if (MianbaoWeaponHud.isWeaponHudLinker(player.getMainHandItem())) {
+        if (WeaponHudLinker.isLinker(player.getMainHandItem())) {
             cir.setReturnValue(InteractionResult.PASS);
         }
     }

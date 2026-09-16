@@ -17,6 +17,11 @@ public final class MianbaoWeaponHudClient {
 
     @SubscribeEvent
     public static void onClientSetup(FMLClientSetupEvent event) {
-        MianbaoWeaponHudExecutor.register();
+        if (FireControlCompat.isModLoaded("taov_core")) {
+            MianbaoWeaponHudExecutor.register();
+            if (FireControlCompat.isModLoaded("cbcmoreshells")) {
+                CbcAmmoRackHudExecutor.register();
+            }
+        }
     }
 }

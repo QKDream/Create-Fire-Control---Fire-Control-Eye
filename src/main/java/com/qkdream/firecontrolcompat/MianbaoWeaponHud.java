@@ -56,7 +56,9 @@ public final class MianbaoWeaponHud {
     }
 
     public static void registerSources() {
-        if (sourcesRegistered || !ModList.get().isLoaded("mianbaos_modernwarfare")) {
+        if (sourcesRegistered
+                || !ModList.get().isLoaded("mianbaos_modernwarfare")
+                || !ModList.get().isLoaded("taov_core")) {
             return;
         }
         sourcesRegistered = true;
@@ -268,14 +270,7 @@ public final class MianbaoWeaponHud {
      * launcher's reload handling.
      */
     public static boolean isWeaponHudLinker(ItemStack stack) {
-        if (stack.isEmpty() || !ModList.get().isLoaded("taov_weapons")) {
-            return false;
-        }
-        try {
-            return stack.is(TaovWeaponItems.WEAPON_HUD_LINKER);
-        } catch (Throwable ignored) {
-            return false;
-        }
+        return WeaponHudLinker.isLinker(stack);
     }
 
     private static double persistentAmmo(BlockEntity source) {

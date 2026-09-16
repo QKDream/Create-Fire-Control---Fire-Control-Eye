@@ -22,7 +22,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * <li>isCannonMount / hasAssembledCannon - the gun is always "assembled".</li>
  * <li>getMountedCannonPosition / getAssembledCannonDirection - muzzle world
  * position and current aim direction for turret feedback loops.</li>
- * <li>pointAssembledCannonAt / Along - pod-control steering via the aim duck.</li>
  * <li>setAutomaticFire - triggers the gun's plant fire input.</li>
  * </ul>
  */
@@ -92,49 +91,4 @@ public abstract class TaovGunCannonMountMixin {
         }
     }
 
-    @Inject(
-            method = "pointAssembledCannonAt(Lnet/minecraft/world/level/Level;Lcom/hooya/stabilizedturret/content/controller/BindingRef;Lnet/minecraft/world/phys/Vec3;)Z",
-            at = @At("HEAD"),
-            cancellable = true
-    )
-    private static void firecontrolcompat$gunPointAt(Level level, BindingRef ref, Vec3 worldTarget, CallbackInfoReturnable<Boolean> cir) {
-        firecontrolcompat$gunPointAtWithLimits(level, ref, worldTarget, 90.0, 90.0, cir);
-    }
-
-    @Inject(
-            method = "pointAssembledCannonAt(Lnet/minecraft/world/level/Level;Lcom/hooya/stabilizedturret/content/controller/BindingRef;Lnet/minecraft/world/phys/Vec3;DD)Z",
-            at = @At("HEAD"),
-            cancellable = true
-    )
-    private static void firecontrolcompat$gunPointAtWithLimits(
-            Level level, BindingRef ref, Vec3 worldTarget, double configuredDepression, double configuredElevation, CallbackInfoReturnable<Boolean> cir) {
-        GunBlockEntity gun = TaovGunBridge.resolveGun(level, ref);
-        if (gun == null || worldTarget == null) {
-            return;
-        }
-        Vec3 muzzle = TaovGunBridge.muzzleWorld(gun);
-        if (muzzle == null || worldTarget.distanceToSqr(muzzle) < 1.0E-8) {
-            cir.setReturnValue(false);
-            return;
-        }
-        Vec3 direction = worldTarget.subtract(muzzle);
-        if (direction.lengthSqr() < 1.0E-8) {
-            cir.setReturnValue(false);
-            return;
-        }
-        cir.setReturnValue(TaovGunBridge.aimAtDirection(gun, direction.normalize(), configuredDepression, configuredElevation));
-    }
-
-    @Inject(
-            method = "pointAssembledCannonAlong(Lnet/minecraft/world/level/Level;Lcom/hooya/stabilizedturret/content/controller/BindingRef;Lnet/minecraft/world/phys/Vec3;DD)Z",
-            at = @At("HEAD"),
-            cancellable = true
-    )
-    private static void firecontrolcompat$gunPointAlong(
-            Level level, BindingRef ref, Vec3 worldDirection, double configuredDepression, double configuredElevation, CallbackInfoReturnable<Boolean> cir) {
-        GunBlockEntity gun = TaovGunBridge.resolveGun(level, ref);
-        if (gun != null) {
-            cir.setReturnValue(TaovGunBridge.aimAtDirection(gun, worldDirection, configuredDepression, configuredElevation));
-        }
-    }
 }

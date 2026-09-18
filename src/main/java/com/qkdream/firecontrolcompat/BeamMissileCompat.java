@@ -550,7 +550,7 @@ public final class BeamMissileCompat {
     }
 
     /** Remembers the Sable sublevel that owns the launcher so the seeker skips the carrier aircraft. */
-    private static void markLaunchSubLevel(BeamRidingMissileEntity missile, ServerLevel level, BlockPos launcherPos) {
+    public static void markLaunchSubLevel(BeamRidingMissileEntity missile, ServerLevel level, BlockPos launcherPos) {
         try {
             SubLevel launchSubLevel = Sable.HELPER.getContaining(level, launcherPos);
             if (launchSubLevel != null) {

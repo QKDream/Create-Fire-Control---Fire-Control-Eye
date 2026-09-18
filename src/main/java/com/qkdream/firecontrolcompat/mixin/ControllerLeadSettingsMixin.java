@@ -4,9 +4,13 @@ import com.hooya.stabilizedturret.client.StabilizerControllerScreen;
 import com.hooya.stabilizedturret.network.OpenControllerPayload;
 import com.qkdream.firecontrolcompat.FireControlLeadSettings;
 import com.qkdream.firecontrolcompat.client.CompatToggleButton;
+import com.qkdream.firecontrolcompat.network.IffOpenPayload;
+import com.qkdream.firecontrolcompat.network.IffStatusPayload;
 import com.qkdream.firecontrolcompat.network.LeadSettingsPayload;
 import java.util.Locale;
+import java.util.UUID;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.core.BlockPos;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -53,6 +57,13 @@ public abstract class ControllerLeadSettingsMixin extends Screen {
     @Unique
     private boolean compat$leadPage;
 
+    /** Computer this screen belongs to, used by the identity section. */
+    @Unique
+    private BlockPos compat$controllerPos;
+
+    @Unique
+    private UUID compat$controllerSubLevel;
+
     @Unique
     private boolean compat$gunLead;
 
@@ -71,6 +82,8 @@ public abstract class ControllerLeadSettingsMixin extends Screen {
 
     @Inject(method = "<init>", at = @At("TAIL"))
     private void compat$initFromSettings(OpenControllerPayload initial, CallbackInfo ci) {
+        this.compat$controllerPos = initial.pos();
+        this.compat$controllerSubLevel = initial.controllerSubLevelId();
         this.compat$gunLead = FireControlLeadSettings.gunLeadEnabled();
         this.compat$verticalLaunch = FireControlLeadSettings.beamVerticalLaunch();
         this.compat$proximityRange = FireControlLeadSettings.beamProximityRange();
@@ -162,6 +175,19 @@ public abstract class ControllerLeadSettingsMixin extends Screen {
             }
         });
         this.addRenderableWidget(this.compat$proximityBox);
+
+        if (IffStatusPayload.isLinked()) {
+            this.addRenderableWidget(new CompatToggleButton(
+                    left,
+                    top + 276,
+                    250,
+                    20,
+                    Component.translatable(IffStatusPayload.isBandSet()
+                            ? "gui.firecontrolcompat.iff_link_set"
+                            : "gui.firecontrolcompat.iff_link_empty"),
+                    button -> PacketDistributor.sendToServer(
+                            new IffOpenPayload(this.compat$controllerPos, this.compat$controllerSubLevel))));
+        }
     }
 
     /**
@@ -217,6 +243,10 @@ public abstract class ControllerLeadSettingsMixin extends Screen {
                 top + 245,
                 color,
                 false);
+        if (IffStatusPayload.isLinked()) {
+            graphics.drawString(
+                    this.font, Component.translatable("gui.firecontrolcompat.iff_section"), left, top + 262, color, false);
+        }
     }
 
     @Inject(method = "saveAndClose", at = @At("HEAD"))

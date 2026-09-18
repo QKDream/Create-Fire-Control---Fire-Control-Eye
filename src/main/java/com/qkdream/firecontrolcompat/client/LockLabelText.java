@@ -46,9 +46,25 @@ public final class LockLabelText {
         return "sable结构";
     }
 
+    /** Category text plus the friend-or-foe marking, e.g. {@code 弹药 · 友}. */
     public static Component component(UUID id) {
         String type = classify(id);
-        return type == null ? null : Component.literal(type);
+        return type == null ? null : Component.literal(type + iffMark(id));
+    }
+
+    /**
+     * Friend-or-foe suffix: {@code · 友} when the contact carries a transponder
+     * on the same band as the observer, {@code · 敌} on a different band and
+     * {@code · 未知} when the structure carries no transponder at all.
+     * Contact linked to no transponder at all stays unlabelled.
+     */
+    private static String iffMark(UUID id) {
+        return switch (ContactTypePayload.lookupIff(id)) {
+            case ContactTypePayload.IFF_FRIENDLY -> " · 友";
+            case ContactTypePayload.IFF_ENEMY -> " · 敌";
+            case ContactTypePayload.IFF_UNKNOWN -> " · 未知";
+            default -> "";
+        };
     }
 
     /**

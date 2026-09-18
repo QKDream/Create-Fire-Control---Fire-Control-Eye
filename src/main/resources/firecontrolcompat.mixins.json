@@ -47,6 +47,7 @@
     "GroundMissileLauncherLoadMixin",
     "GroundMissileLauncherFireMixin",
     "StabilizerBindingHandlerMixin",
+    "ControllerIffStatusMixin",
     "AutoDefenseDisplayBindingRedirectMixin",
     "HeavyAirDefenseSpeedMixin",
     "LoiteringSpeedMixin",

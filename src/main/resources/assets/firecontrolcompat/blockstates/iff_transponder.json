@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "firecontrolcompat:block/iff_transponder" }
+  }
+}

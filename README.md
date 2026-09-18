@@ -2,7 +2,7 @@
 
 # 机械动力：先进火控：火控之眼
 
-**Create: Fire Control — Fire Control Eye** · 版本 `1.30fix` · Minecraft `1.21.1` · NeoForge
+**Create: Fire Control — Fire Control Eye** · 版本 `1.40` · Minecraft `1.21.1` · NeoForge
 
 为机械动力火炮·先进火控（`create-fire-control-0.7.0`）打造的弹药识别与火控增强扩展。它把 vestalihy、CBCMS、TAOV、面包学现代战争等模组的弹药统一接入先进火控的雷达体系，补齐光电锁定、TWS 多目标跟踪、目标标注、提前量指示，并带来架束近炸导弹与红外锁定导弹两款新弹种。
 
@@ -50,11 +50,11 @@
 6. `taov_core-0.1.0.jar` + `taov_weapons-0.1.1.jar` + `shaolib-0.1.0.jar` + `shaolib_munitions-0.1.0.jar` + `synaxis-1.5.0.jar`（TAOV 武器）
 7. `vestalihy-2.5.3.jar`（维斯太利弹药，可选：未安装时仅对应识别功能停用）
 8. `[机械动力火炮：武器拓展] CBC-Military-Supplement-1.21.1-2.1.4.jar`（CBCMS）
-9. 本 mod：`firecontrolcompat-1.30fix.jar`
+9. 本 mod：`firecontrolcompat-1.40.jar`
 
 ## 使用方法
 
-1. 把 `firecontrolcompat-1.30fix.jar` 放入 `mods` 文件夹，启动游戏。
+1. 把 `firecontrolcompat-1.40.jar` 放入 `mods` 文件夹，启动游戏。
 2. 搭建显示连接器 + 雷达，打开「自动反导」与「导弹扫描」。
 3. 从敌对方向发射 / 投掷上述弹药，雷达屏幕会将其显示为导弹目标并被自动拦截。
 4. 火控计算机连接雷达后，雷达页面会出现这些弹药的联系人；锁定后即可使用防空导弹或火炮引导。
@@ -64,7 +64,7 @@
 
 ## 构建
 
-`build.ps1` 会从本机 `.minecraft` 目录自动收集 Minecraft / NeoForge / 各模组的 jar 作为编译类路径，然后编译并打包 `firecontrolcompat-1.30fix.jar`。构建需要 Windows 与 Java 21 运行环境。
+`build.ps1` 会从本机 `.minecraft` 目录自动收集 Minecraft / NeoForge / 各模组的 jar 作为编译类路径，然后编译并打包 `firecontrolcompat-1.40.jar`。构建需要 Windows 与 Java 21 运行环境。
 
 ## 更新日志
 

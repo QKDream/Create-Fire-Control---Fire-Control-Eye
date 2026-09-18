@@ -25,6 +25,12 @@ public record ContactTypePayload(List<ContactTypePayload.Entry> entries) impleme
     public static final byte LIVING = 2;
     public static final byte OTHER = 3;
 
+    /** Friend-or-foe marking carried next to the category. */
+    public static final byte IFF_NONE = 0;
+    public static final byte IFF_FRIENDLY = 1;
+    public static final byte IFF_ENEMY = 2;
+    public static final byte IFF_UNKNOWN = 3;
+
     public static final Type<ContactTypePayload> TYPE = new Type<>(
             ResourceLocation.fromNamespaceAndPath("firecontrolcompat", "contact_types")
     );
@@ -34,13 +40,14 @@ public record ContactTypePayload(List<ContactTypePayload.Entry> entries) impleme
             ContactTypePayload::read
     );
 
-    private static volatile Map<UUID, Byte> TYPES = Map.of();
+    private static volatile Map<UUID, Entry> TYPES = Map.of();
 
     private static void write(RegistryFriendlyByteBuf buffer, ContactTypePayload payload) {
         buffer.writeVarInt(payload.entries.size());
         for (ContactTypePayload.Entry entry : payload.entries) {
             buffer.writeUUID(entry.id());
             buffer.writeByte(entry.type());
+            buffer.writeByte(entry.iff());
         }
     }
 
@@ -48,7 +55,7 @@ public record ContactTypePayload(List<ContactTypePayload.Entry> entries) impleme
         int count = buffer.readVarInt();
         List<ContactTypePayload.Entry> entries = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            entries.add(new ContactTypePayload.Entry(buffer.readUUID(), buffer.readByte()));
+            entries.add(new ContactTypePayload.Entry(buffer.readUUID(), buffer.readByte(), buffer.readByte()));
         }
         return new ContactTypePayload(entries);
     }
@@ -60,9 +67,9 @@ public record ContactTypePayload(List<ContactTypePayload.Entry> entries) impleme
 
     public static void handle(ContactTypePayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
-            Map<UUID, Byte> map = new HashMap<>(Math.max(4, payload.entries.size() * 2));
+            Map<UUID, Entry> map = new HashMap<>(Math.max(4, payload.entries.size() * 2));
             for (ContactTypePayload.Entry entry : payload.entries) {
-                map.put(entry.id(), entry.type());
+                map.put(entry.id(), entry);
             }
             TYPES = map;
         });
@@ -70,7 +77,14 @@ public record ContactTypePayload(List<ContactTypePayload.Entry> entries) impleme
 
     /** Latest server-reported type for a contact id, or null if unknown. */
     public static Byte lookup(UUID id) {
-        return TYPES.get(id);
+        Entry entry = TYPES.get(id);
+        return entry == null ? null : entry.type();
+    }
+
+    /** Latest server-reported friend-or-foe marking, {@link #IFF_NONE} when unmarked. */
+    public static byte lookupIff(UUID id) {
+        Entry entry = TYPES.get(id);
+        return entry == null ? IFF_NONE : entry.iff();
     }
 
     @Override
@@ -78,6 +92,6 @@ public record ContactTypePayload(List<ContactTypePayload.Entry> entries) impleme
         return TYPE;
     }
 
-    public record Entry(UUID id, byte type) {
+    public record Entry(UUID id, byte type, byte iff) {
     }
 }

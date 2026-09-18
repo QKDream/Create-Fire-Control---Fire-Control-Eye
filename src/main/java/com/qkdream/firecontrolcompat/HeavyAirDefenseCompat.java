@@ -127,6 +127,7 @@ public final class HeavyAirDefenseCompat {
             return false;
         }
         missile.markLaunchSource(pos);
+        BeamMissileCompat.markLaunchSubLevel(missile, level, pos);
         missile.setPos(x + 0.5, y + 1.0, z + 0.5);
         missile.shoot(0.0, 2.0, 0.0, 2.0F, 0.0F);
         missile.setBaseDamage(20.0F);

@@ -1,6 +1,9 @@
 package com.qkdream.firecontrolcompat;
 
+import com.qkdream.firecontrolcompat.iff.IffRegistry;
 import com.qkdream.firecontrolcompat.network.ContactTypePayload;
+import com.qkdream.firecontrolcompat.network.IffOpenPayload;
+import com.qkdream.firecontrolcompat.network.IffStatusPayload;
 import com.qkdream.firecontrolcompat.network.LeadSettingsPayload;
 import com.qkdream.firecontrolcompat.network.LeadSettingsSyncPayload;
 import com.qkdream.firecontrolcompat.network.MissileTrackPayload;
@@ -24,12 +27,15 @@ public final class FireControlCompat {
             CbcAutocannonPayloads.markerType();
         }
         BeamMissileRegistry.register(modEventBus);
+        IffRegistry.register(modEventBus);
         modEventBus.addListener(this::commonSetup);
         modEventBus.addListener(ContactTypePayload::register);
         modEventBus.addListener(LeadSettingsPayload::register);
         modEventBus.addListener(LeadSettingsSyncPayload::register);
         modEventBus.addListener(MissileTrackPayload::register);
         modEventBus.addListener(SeekerHudPayload::register);
+        modEventBus.addListener(IffOpenPayload::register);
+        modEventBus.addListener(IffStatusPayload::register);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {

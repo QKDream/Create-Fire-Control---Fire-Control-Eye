@@ -8,8 +8,9 @@ Write-Host "Using mods dir: $modsDir"
 $javac = "D:/.minecraft/runtime/java-runtime-delta/bin/javac.exe"
 $jarExe = "D:/.minecraft/runtime/java-runtime-delta/bin/jar.exe"
 
+# The classpath jars are kept between builds: a freshly written copy is what makes
+# javac's zip filesystem fail to close on Windows (AccessDeniedException) at exit.
 $cpDir = "$ws/build/modscp"
-try { if (Test-Path $cpDir) { Remove-Item -Recurse -Force $cpDir -ErrorAction SilentlyContinue } } catch { Write-Host 'modscp cleanup deferred' }
 New-Item -ItemType Directory -Force $cpDir | Out-Null
 $wantedMods = @(
     "create-fire-control-0.7.1.jar",
@@ -23,8 +24,17 @@ $wantedMods = @(
 )
 foreach ($name in $wantedMods) {
     $src = Join-Path $modsDir $name
-    if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $cpDir }
+    $dst = Join-Path $cpDir $name
+    if (Test-Path -LiteralPath $src) {
+        $needsCopy = $true
+        if (Test-Path -LiteralPath $dst) {
+            $needsCopy = (Get-Item -LiteralPath $src).Length -ne (Get-Item -LiteralPath $dst).Length
+        }
+        if ($needsCopy) { Copy-Item -LiteralPath $src -Destination $cpDir -Force }
+    }
 }
+$cbcmsJar = Get-ChildItem -LiteralPath $modsDir -Filter "*CBC-Military-Supplement*.jar" | Select-Object -First 1
+if ($cbcmsJar) { Copy-Item -LiteralPath $cbcmsJar.FullName -Destination (Join-Path $cpDir "cbcms.jar") }
 if (-not (Test-Path -LiteralPath (Join-Path $cpDir "mianbaos_modernwarfare-2.5.1-neoforge.jar"))) {
     $mianbaoJar = Get-ChildItem -LiteralPath $modsDir -Filter "mianbaos_modernwarfare-*.jar" | Sort-Object Name | Select-Object -First 1
     if ($mianbaoJar) { Copy-Item -LiteralPath $mianbaoJar.FullName -Destination (Join-Path $cpDir $mianbaoJar.Name) }
@@ -42,6 +52,14 @@ if (Test-Path -LiteralPath $sableJar) {
 }
 $createJar = Get-ChildItem -LiteralPath $modsDir -Filter "*create-1.21.1-6.0.10.jar" | Select-Object -First 1
 if ($createJar) { Copy-Item -LiteralPath $createJar.FullName -Destination (Join-Path $cpDir "create-1.21.1-6.0.10.jar") }
+$registrateName = "Registrate-MC1.21-1.3.0+67.jar"
+Push-Location $cpDir
+& $jarExe xf "create-1.21.1-6.0.10.jar" "META-INF/jarjar/$registrateName"
+Pop-Location
+$registratePath = Join-Path $cpDir "META-INF/jarjar/$registrateName"
+if (Test-Path -LiteralPath $registratePath) {
+    Copy-Item -LiteralPath $registratePath -Destination (Join-Path $cpDir $registrateName)
+}
 $createBigCannons = Get-ChildItem -LiteralPath $modsDir -Filter "*createbigcannons-*.jar" | Select-Object -First 1
 if ($createBigCannons) { Copy-Item -LiteralPath $createBigCannons.FullName -Destination (Join-Path $cpDir "createbigcannons.jar") }
 
@@ -95,12 +113,18 @@ $lines.Add("-proc:none")
 Get-ChildItem -Path "$ws/src/main/java" -Recurse -Filter "*.java" | ForEach-Object { $lines.Add($_.FullName.Replace('\','/')) }
 [System.IO.File]::WriteAllLines($argFile, $lines, (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "Compiling $($lines.Count - 7) java files..."
-& $javac "@$argFile"
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "COMPILATION FAILED (exit $LASTEXITCODE)"
-    exit 1
+$javacAttempts = 0
+while ($true) {
+    $javacAttempts++
+    & $javac "@$argFile"
+    if ($LASTEXITCODE -eq 0) { break }
+    if ($javacAttempts -ge 2) {
+        Write-Host "COMPILATION FAILED (exit $LASTEXITCODE)"
+        exit 1
+    }
+    Write-Host "javac exit $LASTEXITCODE on attempt $javacAttempts, retrying..."
 }
-Write-Host "Compilation OK!"
+Write-Host "Compilation OK! ($((Get-ChildItem -Path $outDir -Recurse -Filter *.class | Measure-Object).Count) classes)"
 
 $stage = "$ws/build/jar_tmp"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
@@ -108,7 +132,7 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item -Recurse -Force "$outDir/*" $stage
 Copy-Item -Recurse -Force "$ws/src/main/resources/*" $stage
 
-$jarOut = "$ws/firecontrolcompat-1.30fix.jar"
+$jarOut = "$ws/firecontrolcompat-1.40.jar"
 Push-Location $stage
 & $jarExe cf $jarOut *
 $jarExit = $LASTEXITCODE

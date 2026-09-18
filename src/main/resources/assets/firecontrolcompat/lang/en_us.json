@@ -44,4 +44,15 @@
   "gui.firecontrolcompat.vertical_launch": "Vertical launch",
   "gui.firecontrolcompat.horizontal_launch": "Horizontal launch",
   "gui.firecontrolcompat.beam_proximity_range": "Beam proximity range"
+,
+  "block.firecontrolcompat.iff_transponder": "IFF Transponder",
+  "gui.firecontrolcompat.iff_band": "Frequency Band",
+  "gui.firecontrolcompat.iff_band_hint": "Two items define the band",
+  "gui.firecontrolcompat.iff_section": "Identification",
+  "gui.firecontrolcompat.iff_link_set": "Open IFF transponder (band set)",
+  "gui.firecontrolcompat.iff_link_empty": "Open IFF transponder (band empty)",
+  "message.firecontrolcompat.iff.linked": "Connected: IFF transponder",
+  "message.firecontrolcompat.iff.unlinked": "Disconnected: IFF transponder",
+  "message.firecontrolcompat.iff.need_controller": "Right click a fire control computer with the wrench first",
+  "message.firecontrolcompat.iff.no_link": "This fire control computer has no IFF transponder"
 }

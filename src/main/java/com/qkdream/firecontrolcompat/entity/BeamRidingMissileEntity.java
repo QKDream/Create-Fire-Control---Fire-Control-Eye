@@ -4,13 +4,16 @@ import com.hooya.stabilizedturret.network.MissileRemoteStatePayload;
 import com.qkdream.firecontrolcompat.BeamMissileRegistry;
 import com.qkdream.firecontrolcompat.FireControlCompat;
 import com.qkdream.firecontrolcompat.FireControlLeadSettings;
+import com.qkdream.firecontrolcompat.PhysicsGroups;
 import com.qkdream.firecontrolcompat.ShaolibBridge;
+import com.qkdream.firecontrolcompat.iff.IffOwnership;
 import com.qkdream.firecontrolcompat.network.MissileTrackPayload;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.sublevel.ServerSubLevelContainer;
 import dev.ryanhcode.sable.api.sublevel.SubLevelContainer;
 import dev.ryanhcode.sable.sublevel.SubLevel;
 import java.util.List;
+import java.util.Set;
 import java.util.Locale;
 import java.util.UUID;
 import net.mcreator.myfirstmod.entity.Laserpoint4Entity;
@@ -71,6 +74,21 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
     private static final double BOOST_TURN_RADIANS_PER_TICK = Math.toRadians(20.0);
     /** Axial speed cap during the 0.5s boost window: 10 ticks x 0.3 blocks = at most 3 blocks flown. */
     private static final double BOOST_MAX_SPEED = 0.3;
+    /**
+     * Safety bubble around the launcher's own structure. Building the launch
+     * position from the first tick is not always reliable when Sable moves a
+     * freshly spawned projectile out of its plot, so the fuze additionally
+     * treats the hull itself as off limits.
+     */
+    private static final double LAUNCH_CLEARANCE = 3.0;
+    /** How far around the launch point neighbouring bodies are still counted as the same platform. */
+    private static final double LAUNCH_NEIGHBOURHOOD = 6.0;
+    /**
+     * Rail safety: the structure fuze stays cold for the first second of the
+     * flight, so a salvo cannot cook off against whatever hull happens to be
+     * beside the launcher.
+     */
+    private static final int STRUCTURE_FUSE_GRACE_TICKS = 20;
 
     protected Vec3 launchPosition;
     protected BlockPos launchSourcePos;
@@ -81,6 +99,12 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
     /** Proximity fuse range snapshot taken from the fire control computer setting. */
     private double proximityRadius = PROXIMITY_RADIUS;
     private boolean launchSettingsCaptured;
+    /** Cached per tick: the missile is still on or inside the platform that launched it. */
+    private int launcherClearanceTick = Integer.MIN_VALUE;
+    private boolean launcherClearance;
+    /** Cached per tick: every physics body that belongs to the launching platform. */
+    private int motherBodyTick = Integer.MIN_VALUE;
+    private Set<UUID> motherBodyCache = Set.of();
 
     /** Guidance top speed in blocks per tick. Beam missile: 34 (680 blocks/s, Mach 2). */
     protected double guidanceSpeed() {
@@ -109,6 +133,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
     /** Sublevel that contains the launching rack, so the seeker never locks the carrier aircraft. */
     public void markLaunchSubLevel(UUID subLevelId) {
         this.launchSubLevelId = subLevelId;
+        IffOwnership.remember(this, subLevelId);
     }
 
     /**
@@ -270,7 +295,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
 
         Vec3 to = this.position();
         Vec3 from = to.subtract(this.getDeltaMovement());
-        Vec3 armedFrom = this.clipSegmentPastArmDistance(from, to);
+        Vec3 armedFrom = this.stillOnLauncher() ? null : this.clipSegmentPastArmDistance(from, to);
         if (armedFrom != null) {
             ProximityHit hit = this.findProximityTarget(armedFrom, to);
             if (hit != null) {
@@ -516,7 +541,7 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         Vec3 target;
         // Fire control's AA guidance owns the Sable structure fuse; the local
         // fuse keeps detonating on entity / Shaolib munitions only.
-        if (!this.fireControlAirDefenseGuided()) {
+        if (!this.fireControlAirDefenseGuided() && this.tickCount >= STRUCTURE_FUSE_GRACE_TICKS) {
             target = this.findSableTarget(segStart, segEnd);
             if (target != null) {
                 return new ProximityHit(target, "sable");
@@ -532,7 +557,61 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
 
     private boolean contactArmed() {
         return this.launchPosition != null
-                && this.position().distanceToSqr(this.launchPosition) >= CONTACT_ARM_DISTANCE * CONTACT_ARM_DISTANCE;
+                && this.position().distanceToSqr(this.launchPosition) >= CONTACT_ARM_DISTANCE * CONTACT_ARM_DISTANCE
+                && !this.stillOnLauncher();
+    }
+
+    /**
+     * Every physics body that makes up the launching platform: the body that
+     * fired, everything connected or welded to it (any bearing, joint, coupler
+     * or welded blueprint piece) and every body the launch point sat inside.
+     * A ship built from several bodies is therefore a single mother body.
+     */
+    private Set<UUID> motherBody() {
+        if (this.motherBodyTick == this.tickCount) {
+            return this.motherBodyCache;
+        }
+        Set<UUID> body = Set.of();
+        try {
+            Level level = this.level();
+            if (this.launchSubLevelId != null || this.launchPosition != null) {
+                body = PhysicsGroups.motherBody(
+                        level, this.launchSubLevelId, this.launchPosition, LAUNCH_NEIGHBOURHOOD);
+            }
+        } catch (Throwable ignored) {
+        }
+        this.motherBodyTick = this.tickCount;
+        this.motherBodyCache = body;
+        return body;
+    }
+
+    /**
+     * Whether the missile is still sitting on or inside its own platform. Both
+     * fuzes stay silent there: a round that detonates while leaving the rail
+     * damages its own launcher, and a freshly spawned projectile whose launch
+     * position was captured after Sable moved it out of the plot would
+     * otherwise arm in the middle of its own hull.
+     */
+    private boolean stillOnLauncher() {
+        if (this.launcherClearanceTick == this.tickCount) {
+            return this.launcherClearance;
+        }
+        boolean inside = false;
+        try {
+            Level level = this.level();
+            Vec3 position = this.position();
+            for (UUID bodyId : this.motherBody()) {
+                SubLevel body = PhysicsGroups.resolve(level, bodyId);
+                if (body != null && body.boundingBox().toMojang().inflate(LAUNCH_CLEARANCE).contains(position)) {
+                    inside = true;
+                    break;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        this.launcherClearanceTick = this.tickCount;
+        this.launcherClearance = inside;
+        return inside;
     }
 
     /** Trims the travel segment so the fuze never scans closer than the arm distance to the launcher. */
@@ -575,8 +654,12 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
             if (container == null) {
                 return null;
             }
+            Set<UUID> ownPlatform = this.motherBody();
             for (SubLevel subLevel : container.getAllSubLevels()) {
                 if (subLevel == null || subLevel.isRemoved()) {
+                    continue;
+                }
+                if (ownPlatform.contains(subLevel.getUniqueId())) {
                     continue;
                 }
                 AABB box = subLevel.boundingBox().toMojang();

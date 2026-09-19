@@ -2,6 +2,7 @@ package com.qkdream.firecontrolcompat;
 
 import com.qkdream.firecontrolcompat.iff.IffRegistry;
 import com.qkdream.firecontrolcompat.network.ContactTypePayload;
+import com.qkdream.firecontrolcompat.network.GunBallisticsPayload;
 import com.qkdream.firecontrolcompat.network.IffOpenPayload;
 import com.qkdream.firecontrolcompat.network.IffStatusPayload;
 import com.qkdream.firecontrolcompat.network.LeadSettingsPayload;
@@ -32,6 +33,7 @@ public final class FireControlCompat {
         modEventBus.addListener(ContactTypePayload::register);
         modEventBus.addListener(LeadSettingsPayload::register);
         modEventBus.addListener(LeadSettingsSyncPayload::register);
+        modEventBus.addListener(GunBallisticsPayload::register);
         modEventBus.addListener(MissileTrackPayload::register);
         modEventBus.addListener(SeekerHudPayload::register);
         modEventBus.addListener(IffOpenPayload::register);

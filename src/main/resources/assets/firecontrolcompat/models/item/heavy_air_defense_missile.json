@@ -1,7 +1,6 @@
 {
-  "parent": "mianbaos_modernwarfare:custom/lu_ji_xun_hang_dao_dan_",
+  "parent": "firecontrolcompat:entity/heavy_air_defense_missile",
   "textures": {
-    "0": "mianbaos_modernwarfare:block/lu_ji_xun_hang_dao_dan_",
-    "particle": "mianbaos_modernwarfare:item/lu_ji_xun_hang_dao_dan_"
+    "particle": "firecontrolcompat:block/heavy_air_defense_missile_texture2"
   }
 }

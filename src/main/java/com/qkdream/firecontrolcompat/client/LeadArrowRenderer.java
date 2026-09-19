@@ -17,11 +17,13 @@ import org.joml.Vector3f;
  * Shared lead indicator drawing for the fire control HUD.
  *
  * <p>The arrow starts at the lock frame centre and ends at the predicted
- * intercept point solved against the target's motion with a nominal muzzle
- * speed, so the tip is where the shot should be aimed. The tip is drawn as a
- * small circle. The radar lock and the optical lock both feed this renderer;
- * the caller decides which one is shown to avoid duplicates when both locks
- * are active.
+ * intercept point, so the tip is where the shot should be aimed. When the
+ * bound cannon's ballistic profile has been synced to the client the tip is
+ * solved with the shell's own drop ({@link GunLeadBallistics}); otherwise the
+ * straight-line fallback below keeps the old behaviour with a nominal muzzle
+ * speed. The tip is drawn as a small circle. The radar lock and the optical
+ * lock both feed this renderer; the caller decides which one is shown to
+ * avoid duplicates when both locks are active.
  */
 public final class LeadArrowRenderer {
 
@@ -82,21 +84,30 @@ public final class LeadArrowRenderer {
             return;
         }
         Vec3 launchPos = launchPosition(minecraft);
-        Vec3 own = ClientRadarState.isActive() ? ClientRadarState.getOwnVelocity() : null;
-        Vec3 relative = own == null ? targetVelocity : targetVelocity.subtract(own);
-        if (relative.lengthSqr() < 1.0E-6D) {
-            return;
+        Vec3 interception = GunLeadBallistics.aimPoint(launchPos, targetPos, targetVelocity);
+        Vec3 intercept;
+        Vec3 fallbackDirection;
+        if (interception != null) {
+            intercept = interception;
+            fallbackDirection = interception.subtract(targetPos);
+        } else {
+            Vec3 own = ClientRadarState.isActive() ? ClientRadarState.getOwnVelocity() : null;
+            Vec3 relative = own == null ? targetVelocity : targetVelocity.subtract(own);
+            if (relative.lengthSqr() < 1.0E-6D) {
+                return;
+            }
+            double flightTicks = solveFlightTicks(targetPos, relative, launchPos);
+            if (flightTicks <= 0.0D) {
+                return;
+            }
+            intercept = targetPos.add(targetVelocity.scale(flightTicks));
+            fallbackDirection = relative;
         }
-        double flightTicks = solveFlightTicks(targetPos, relative, launchPos);
-        if (flightTicks <= 0.0D) {
-            return;
-        }
-        Vec3 intercept = targetPos.add(targetVelocity.scale(flightTicks));
         int width = graphics.guiWidth();
         int height = graphics.guiHeight();
         int[] to = project(minecraft, intercept, width, height, partialTicks);
         if (to == null) {
-            double[] direction = screenDirection(minecraft, relative);
+            double[] direction = screenDirection(minecraft, fallbackDirection);
             if (direction == null) {
                 return;
             }

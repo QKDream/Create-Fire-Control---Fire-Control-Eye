@@ -47,12 +47,15 @@
 ,
   "block.firecontrolcompat.iff_transponder": "敌我识别应答机",
   "gui.firecontrolcompat.iff_band": "频段设置",
-  "gui.firecontrolcompat.iff_band_hint": "放入两件物品以定义频段",
+  "gui.firecontrolcompat.iff_band_hint": "放入两件物品即可设置频段，物品不会消耗",
+  "gui.firecontrolcompat.iff_clear": "清除频段",
   "gui.firecontrolcompat.iff_section": "敌我识别",
   "gui.firecontrolcompat.iff_link_set": "打开敌我识别应答机（已设置频段）",
   "gui.firecontrolcompat.iff_link_empty": "打开敌我识别应答机（频段未设置）",
   "message.firecontrolcompat.iff.linked": "已连接：敌我识别应答机",
   "message.firecontrolcompat.iff.unlinked": "已断开：敌我识别应答机",
   "message.firecontrolcompat.iff.need_controller": "请先用扳手右击火控计算机，再右键本应答机",
-  "message.firecontrolcompat.iff.no_link": "该火控计算机未连接敌我识别应答机"
+  "message.firecontrolcompat.iff.no_link": "该火控计算机未连接敌我识别应答机",
+  "message.firecontrolcompat.iff.band_set": "频段已设置",
+  "message.firecontrolcompat.iff.band_cleared": "频段已清除"
 }

@@ -61,6 +61,7 @@ public record IffOpenPayload(BlockPos controllerPos, UUID controllerSubLevel)
                 return;
             }
             player.openMenu(transponder);
+            IffBandPayload.send(player, transponder.band());
         });
     }
 

@@ -4,6 +4,8 @@ import com.qkdream.firecontrolcompat.iff.IffRegistry;
 import com.qkdream.firecontrolcompat.network.ContactTypePayload;
 import com.qkdream.firecontrolcompat.network.GunBallisticsPayload;
 import com.qkdream.firecontrolcompat.network.IffOpenPayload;
+import com.qkdream.firecontrolcompat.network.IffBandPayload;
+import com.qkdream.firecontrolcompat.network.IffClearBandPayload;
 import com.qkdream.firecontrolcompat.network.IffStatusPayload;
 import com.qkdream.firecontrolcompat.network.LeadSettingsPayload;
 import com.qkdream.firecontrolcompat.network.LeadSettingsSyncPayload;
@@ -38,6 +40,8 @@ public final class FireControlCompat {
         modEventBus.addListener(SeekerHudPayload::register);
         modEventBus.addListener(IffOpenPayload::register);
         modEventBus.addListener(IffStatusPayload::register);
+        modEventBus.addListener(IffBandPayload::register);
+        modEventBus.addListener(IffClearBandPayload::register);
     }
 
     private void commonSetup(FMLCommonSetupEvent event) {

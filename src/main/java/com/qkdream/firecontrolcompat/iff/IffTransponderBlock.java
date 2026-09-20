@@ -1,6 +1,7 @@
 package com.qkdream.firecontrolcompat.iff;
 
 import com.mojang.serialization.MapCodec;
+import com.qkdream.firecontrolcompat.network.IffBandPayload;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
@@ -68,15 +69,9 @@ public class IffTransponderBlock extends BaseEntityBlock {
             BlockState state, Level level, BlockPos pos, Player player, BlockHitResult hit) {
         if (!level.isClientSide && level.getBlockEntity(pos) instanceof IffTransponderBlockEntity transponder) {
             player.openMenu(transponder);
+            IffBandPayload.send(player, transponder.band());
         }
         return InteractionResult.sidedSuccess(level.isClientSide);
     }
 
-    @Override
-    public BlockState playerWillDestroy(Level level, BlockPos pos, BlockState state, Player player) {
-        if (!level.isClientSide && level.getBlockEntity(pos) instanceof IffTransponderBlockEntity transponder) {
-            transponder.dropContents();
-        }
-        return super.playerWillDestroy(level, pos, state, player);
-    }
 }

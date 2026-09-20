@@ -14,12 +14,9 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
-import net.minecraft.core.NonNullList;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.Container;
-import net.minecraft.world.ContainerHelper;
 import net.minecraft.world.MenuProvider;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
@@ -34,16 +31,19 @@ import net.minecraft.world.level.block.state.BlockState;
  * was wrenched onto. The band is compared against every other transponder to
  * decide whether a radar contact is friendly, hostile or unknown.
  */
-public class IffTransponderBlockEntity extends BlockEntity implements Container, MenuProvider {
-
-    public static final int SLOTS = 2;
+public class IffTransponderBlockEntity extends BlockEntity implements MenuProvider {
 
     private static final Set<IffTransponderBlockEntity> LOADED = ConcurrentHashMap.newKeySet();
     private static final Map<UUID, Presence> PRESENCE_CACHE = new HashMap<>();
     private static final Map<UUID, Set<UUID>> PRESENCE_CHAIN_CACHE = new HashMap<>();
     private static long presenceCacheTick = Long.MIN_VALUE;
 
-    private final NonNullList<ItemStack> items = NonNullList.withSize(SLOTS, ItemStack.EMPTY);
+    /**
+     * The recorded identity code. The transponder keeps no inventory of its
+     * own: items are only handed to it to define the band and are given
+     * straight back, so the block never stores anything a player could lose.
+     */
+    private IffBand band = IffBand.EMPTY;
 
     private BlockPos controllerPos;
     private UUID controllerSubLevel;
@@ -56,7 +56,17 @@ public class IffTransponderBlockEntity extends BlockEntity implements Container,
     // ------------------------------------------------------------------ band
 
     public IffBand band() {
-        return IffBand.of(this.items.get(0), this.items.get(1));
+        return this.band;
+    }
+
+    /** Records a new identity code; the items that defined it are not kept. */
+    public void setBand(IffBand newBand) {
+        this.band = newBand == null ? IffBand.EMPTY : newBand;
+        this.setChanged();
+    }
+
+    public void clearBand() {
+        this.setBand(IffBand.EMPTY);
     }
 
     // ------------------------------------------------------------------ link
@@ -220,30 +230,17 @@ public class IffTransponderBlockEntity extends BlockEntity implements Container,
         LOADED.add(this);
     }
 
-    public void dropContents() {
-        Level level = this.getLevel();
-        if (level == null) {
-            return;
-        }
-        for (ItemStack stack : this.items) {
-            if (!stack.isEmpty()) {
-                net.minecraft.world.Containers.dropItemStack(
-                        level,
-                        this.worldPosition.getX() + 0.5D,
-                        this.worldPosition.getY() + 0.5D,
-                        this.worldPosition.getZ() + 0.5D,
-                        stack);
-            }
-        }
-        this.items.clear();
-    }
-
     // ------------------------------------------------------------------- nbt
 
     @Override
     protected void saveAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.saveAdditional(tag, registries);
-        ContainerHelper.saveAllItems(tag, this.items, registries);
+        if (!this.band.first().isEmpty()) {
+            tag.put("IffBandA", this.band.first().save(registries));
+        }
+        if (!this.band.second().isEmpty()) {
+            tag.put("IffBandB", this.band.second().save(registries));
+        }
         BlockPos pos = this.controllerPos;
         if (pos != null) {
             tag.putLong("IffController", pos.asLong());
@@ -259,8 +256,9 @@ public class IffTransponderBlockEntity extends BlockEntity implements Container,
     @Override
     protected void loadAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.loadAdditional(tag, registries);
-        this.items.clear();
-        ContainerHelper.loadAllItems(tag, this.items, registries);
+        this.band = new IffBand(
+                readBandItem(registries, tag, "IffBandA"),
+                readBandItem(registries, tag, "IffBandB"));
         if (tag.contains("IffController")) {
             this.controllerPos = BlockPos.of(tag.getLong("IffController"));
             this.controllerDimension = tag.contains("IffControllerDim")
@@ -276,65 +274,10 @@ public class IffTransponderBlockEntity extends BlockEntity implements Container,
         }
     }
 
-    // --------------------------------------------------------------- container
-
-    @Override
-    public int getContainerSize() {
-        return SLOTS;
-    }
-
-    @Override
-    public boolean isEmpty() {
-        for (ItemStack stack : this.items) {
-            if (!stack.isEmpty()) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    @Override
-    public ItemStack getItem(int slot) {
-        return this.items.get(slot);
-    }
-
-    @Override
-    public ItemStack removeItem(int slot, int amount) {
-        ItemStack removed = ContainerHelper.removeItem(this.items, slot, amount);
-        if (!removed.isEmpty()) {
-            this.setChanged();
-        }
-        return removed;
-    }
-
-    @Override
-    public ItemStack removeItemNoUpdate(int slot) {
-        return ContainerHelper.takeItem(this.items, slot);
-    }
-
-    @Override
-    public void setItem(int slot, ItemStack stack) {
-        this.items.set(slot, stack);
-        if (stack.getCount() > this.getMaxStackSize()) {
-            stack.setCount(this.getMaxStackSize());
-        }
-        this.setChanged();
-    }
-
-    @Override
-    public int getMaxStackSize() {
-        return 1;
-    }
-
-    @Override
-    public boolean stillValid(Player player) {
-        return Container.stillValidBlockEntity(this, player);
-    }
-
-    @Override
-    public void clearContent() {
-        this.items.clear();
-        this.setChanged();
+    /** Reads one recorded band item back; a missing tag means an empty stack. */
+    private static ItemStack readBandItem(HolderLookup.Provider registries, CompoundTag tag, String key) {
+        CompoundTag stored = tag.getCompound(key);
+        return stored.isEmpty() ? ItemStack.EMPTY : ItemStack.parseOptional(registries, stored);
     }
 
     // ------------------------------------------------------------------ menu

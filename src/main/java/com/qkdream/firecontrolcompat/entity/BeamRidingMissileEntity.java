@@ -1,6 +1,8 @@
 package com.qkdream.firecontrolcompat.entity;
 
 import com.hooya.stabilizedturret.network.MissileRemoteStatePayload;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 import com.qkdream.firecontrolcompat.BeamMissileRegistry;
 import com.qkdream.firecontrolcompat.FireControlCompat;
 import com.qkdream.firecontrolcompat.FireControlLeadSettings;
@@ -356,11 +358,18 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         try {
             Vec3 worldPosition = Sable.HELPER.projectOutOfSubLevel(this.level(), this.position());
             Vec3 velocity = this.getDeltaMovement();
+            Quaternionf rotation = velocity.lengthSqr() < 1.0E-8
+                    ? new Quaternionf()
+                    : new Quaternionf().rotationTo(new Vector3f(0.0F, 0.0F, 1.0F),
+                            new Vector3f((float) velocity.x, (float) velocity.y, (float) velocity.z).normalize());
             MissileRemoteStatePayload payload = new MissileRemoteStatePayload(
                     this.getUUID(),
                     BuiltInRegistries.ENTITY_TYPE.getKey(this.getType()),
                     worldPosition.x, worldPosition.y, worldPosition.z,
-                    velocity.x, velocity.y, velocity.z);
+                    velocity.x, velocity.y, velocity.z,
+                    rotation.x, rotation.y, rotation.z, rotation.w,
+                    false,
+                    serverLevel.getGameTime());
             for (ServerPlayer player : serverLevel.players()) {
                 if (player.position().distanceToSqr(worldPosition) <= 4.0E8) {
                     PacketDistributor.sendToPlayer(player, payload);

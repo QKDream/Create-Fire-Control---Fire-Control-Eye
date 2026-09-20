@@ -28,7 +28,6 @@ import net.mcreator.myfirstmod.block.Missile2rackBlock;
 import net.mcreator.myfirstmod.block.MissilerackBlock;
 import net.mcreator.myfirstmod.block.NuclearcruisemissilerackBlock;
 import net.mcreator.myfirstmod.block.OpticalguidedmissilerackBlock;
-import net.mcreator.myfirstmod.block.RackBlock;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.player.Player;
@@ -59,7 +58,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
         AntitankmissilelaunchersanxingBlock.class,
         AntitankmissilelaunchersixingBlock.class,
         GroundmissilelauncherheadBlock.class,
-        RackBlock.class,
         AgmMissile1rackBlock.class,
         AgmMissile2rackBlock.class,
         AgmMissile3rackBlock.class,
@@ -80,7 +78,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 })
 public abstract class MianbaoLauncherLinkerUseMixin {
 
-    @Inject(method = "useWithoutItem", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "useWithoutItem", at = @At("HEAD"), cancellable = true, require = 0)
     private void firecontrolcompat$allowLinkerBinding(
             BlockState state,
             Level level,

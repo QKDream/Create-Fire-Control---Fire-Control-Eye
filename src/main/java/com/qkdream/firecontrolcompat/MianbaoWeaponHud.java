@@ -14,9 +14,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
+import net.mcreator.myfirstmod.block.AGMmissilemixedRACKBlock;
 import net.mcreator.myfirstmod.init.MianbaosModernwarfareModBlocks;
 import net.mcreator.myfirstmod.init.MianbaosModernwarfareModBlockEntities;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -25,6 +27,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity;
@@ -83,7 +86,7 @@ public final class MianbaoWeaponHud {
         register(MianbaosModernwarfareModBlockEntities.AGM_MISSILE_2RACK, true);
         register(MianbaosModernwarfareModBlockEntities.AGM_MISSILE_3RACK, true);
         register(MianbaosModernwarfareModBlockEntities.AGM_MISSILE_4RACK, true);
-        register(MianbaosModernwarfareModBlockEntities.AG_MMISSILEMIXED_RACK, true);
+        register(rackTypeOf(AGMmissilemixedRACKBlock.class), true);
         register(MianbaosModernwarfareModBlockEntities.CLOSE_MISSILE_1RACK, true);
         register(MianbaosModernwarfareModBlockEntities.CLOSE_MISSILE_2RACK, true);
         register(MianbaosModernwarfareModBlockEntities.FAR_MISSILE_1RACK, true);
@@ -109,7 +112,33 @@ public final class MianbaoWeaponHud {
     }
 
     private static void register(Supplier<? extends BlockEntityType<?>> holder, boolean rack) {
-        BlockEntityType<?> type = holder.get();
+        register(holder.get(), rack);
+    }
+
+    /**
+     * MCreator renames the DeferredHolder fields between builds - the mixed AGM
+     * rack was {@code AG_MMISSILEMIXED_RACK} in 2.5.1 and is registered under a
+     * different name in 2.5.2 - and a stale field reference aborts common setup.
+     * Resolve this one from the block it belongs to, which is stable.
+     */
+    private static BlockEntityType<?> rackTypeOf(Class<? extends Block> blockClass) {
+        for (Block block : BuiltInRegistries.BLOCK) {
+            if (block.getClass() != blockClass) {
+                continue;
+            }
+            BlockState state = block.defaultBlockState();
+            for (BlockEntityType<?> candidate : BuiltInRegistries.BLOCK_ENTITY_TYPE) {
+                if (candidate.isValid(state)) {
+                    return candidate;
+                }
+            }
+        }
+        FireControlCompat.LOGGER.warn("[firecontrolcompat] no block entity type found for {}",
+                blockClass.getSimpleName());
+        return null;
+    }
+
+    private static void register(BlockEntityType<?> type, boolean rack) {
         if (type == null) {
             return;
         }

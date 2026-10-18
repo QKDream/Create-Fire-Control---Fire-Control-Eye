@@ -1,0 +1,22 @@
+v2.7 — 2026-08-26
+
+【中文】
+- 新增：通用近炸引信新增对《机械动力火炮：武器拓展》(CBC Military Supplement) 弹药的近炸感应，覆盖其全部弹药谱系：全系列鱼雷（短程/中程/长程/深水/高速/减速/梭鱼/榴霰等 30 余种）、HE/APHE 火箭弹（单发、双联与巡飞弹）、深水炸弹，以及 HE/APHE 航空炸弹与跳弹炸弹。目标飞行路径的任何一段进入引信感应半径即起爆
+- 新增：通用近炸引信新增对 TAOV Weapons 的 TAU 与地狱火导弹的近炸感应。这两种导弹并非 Minecraft 实体，而是 Shaolib 体系的非实体弹，因此采用反射软依赖接入：未安装 TAOV 时对本 mod 零影响；安装后飞行中的 TAU/地狱火会触发近炸，嵌入 SABLE 舰体结构的导弹会换算为世界坐标后参与判定。判定使用弹道扫掠（线段-线段最近距离），高速交错也能可靠起爆
+- 修复：修复 1.21.1 下实体类型匹配失效：EntityType.toShortString() 在该版本会剥掉命名空间，导致 CBCMS 鱼雷、深水炸弹等目标此前始终无法被识别。现改为读取注册表规范键名（BuiltInRegistries.ENTITY_TYPE）进行命名空间+名称双重匹配，vestalihy、面包学等既有兼容分支也一并按规范键名重写，杜绝同类问题
+- 修复：Shaolib 反射类加载增加多级回退（线程上下文 → 本模组 → 系统类加载器），降低不同整合包环境下的静默失效概率
+- 其他：游戏内版本号提升至 2.7；简介页面同步更新引信兼容目标与可选前置说明
+
+【English】
+- New: Universal Proximity Fuze now detonates against CBC Military Supplement munitions: the full torpedo family (short/medium/long-range, deepwater, highspeed, reductive, shrapnel and more), HE/APHE rockets (single, dual and loitering), depth charges, and HE/APHE bombs including bouncing bombs — anywhere along their flight path
+- New: Universal Proximity Fuze now detects TAOV Weapons' TAU and Hellfire missiles. These are not Minecraft entities but Shaolib non-entity projectiles, so the fuze integrates through a reflective soft dependency: TAOV not installed = zero impact on this mod; installed = in-flight TAU/Hellfire trigger detonation, and missiles embedded in SABLE ship structures are resolved to world coordinates. Detection uses swept segment-to-segment distance, so even high-speed crossing shots fuse reliably
+- Fixed: entity matching used EntityType.toShortString(), which on 1.21.1 strips the namespace — CBCMS torpedoes/depth charges were silently never recognized. Matching now reads canonical registry keys (BuiltInRegistries.ENTITY_TYPE), and the Vestalihy / Mianbao branches were rewritten on the same canonical-key basis to prevent the same class of bug
+- Fixed: Shaolib reflective class loading now falls back across the thread context / own mod / system class loaders, reducing silent detection failures in different modpack environments
+- Misc: in-game version bumped to 2.7; readme updated
+
+【Русский】
+- Новое: Универсальный неконтактный взрыватель теперь срабатывает по боеприпасам CBC Military Supplement: всему семейству торпед (ближние/средние/дальние, глубоководные, скоростные, редуктивные, шрапнельные и др.), ракетам HE/APHE (одиночным, спаренным и барражирующим), глубинным бомбам, а также авиабомбам HE/APHE и прыгающим бомбам — на любом участке траектории
+- Новое: Универсальный неконтактный взрыватель теперь обнаруживает ракеты TAU и Hellfire из TAOV Weapons. Это не сущности Minecraft, а не-сущностные снаряды Shaolib, поэтому интеграция выполнена через рефлексивную мягкую зависимость: без TAOV мод работает без изменений; с TAOV летящие TAU/Hellfire вызывают подрыв, а ракеты, встроенные в SABLE-конструкции, пересчитываются в мировые координаты. Используется заметание траектории (расстояние отрезок-отрезок), надёжно срабатывает даже на высоких скоростях
+- Исправлено сопоставление типов сущностей: в 1.21.1 EntityType.toShortString() отбрасывает пространство имён, из-за чего торпеды и глубинные бомбы CBCMS никогда не распознавались. Теперь используются канонические ключи реестра (BuiltInRegistries.ENTITY_TYPE); ветки Vestalihy и Mianbao переписаны на ту же основу
+- Рефлексивная загрузка классов Shaolib получила многоуровневый фолбэк загрузчиков (контекст потока → собственный → системный), снижая риск тихих отказов в разных сборках
+- Внутриигровая версия повышена до 2.7; страница описания обновлена

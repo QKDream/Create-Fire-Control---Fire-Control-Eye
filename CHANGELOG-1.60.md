@@ -1,6 +1,6 @@
 # 火控之眼 1.60 更新日志
 
-> 适用：Minecraft 1.21.1 / NeoForge 21.1.248　对应构建：`firecontrolcompat-1.60.jar`
+> 适用：Minecraft 1.21.1 / NeoForge 21.1.248　对应构建：`firecontrolcompat-1.60.1.jar`
 > 依赖：Create Fire Control 0.8.5（火控学）、面包学现代战争 2.6.1b1
 
 ## 一、机载选弹（本轮重点修复）

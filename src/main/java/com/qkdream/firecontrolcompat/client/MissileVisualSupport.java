@@ -34,10 +34,37 @@ public final class MissileVisualSupport {
     }
 
     /** Hides the natively tracked entity whenever fire control already renders a remote proxy for it. */
+    /**
+     * Where the native round gives way to the pack's long-range proxy, in blocks.
+     *
+     * <p>Only out at that range: the proxy exists to draw a round the client is not tracking,
+     * and inside the range the entity itself is what the crew should see. Suppressing the
+     * native at any distance is what made a freshly fired cruise missile look as though it had
+     * vanished - the pack owned it, so this hid it, and its proxy was not drawn nearby.</p>
+     */
+    /** Where the native round gives way to the pack's long-range picture, in blocks. */
+    private static final double PROXY_RANGE = 256.0D;
+
+    /**
+     * Whether the pack's long-range picture should replace the round itself.
+     *
+     * <p>This is a drawing arrangement, not stealth: the radar stealth of the cruise rounds
+     * is a separate rule (invisible past a thousand blocks) kept in the scanner. Only out at
+     * this range is the picture used; inside it the entity itself is drawn, which is what
+     * keeps a freshly fired round from looking as though it had vanished.</p>
+     */
     public static boolean shouldSuppressNative(Entity entity) {
-        return entity != null
-                && !isRemoteVisual(entity)
-                && MissileLongRangeEffects.getRemoteVisual(entity.getUUID()) != null;
+        if (entity == null || isRemoteVisual(entity)
+                || MissileLongRangeEffects.getRemoteVisual(entity.getUUID()) == null) {
+            return false;
+        }
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.gameRenderer == null
+                || minecraft.gameRenderer.getMainCamera() == null) {
+            return false;
+        }
+        Vec3 camera = minecraft.gameRenderer.getMainCamera().getPosition();
+        return camera.distanceToSqr(entity.position()) > PROXY_RANGE * PROXY_RANGE;
     }
 
     /**

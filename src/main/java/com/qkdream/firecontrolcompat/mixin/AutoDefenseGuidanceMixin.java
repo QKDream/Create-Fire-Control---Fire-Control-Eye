@@ -56,17 +56,25 @@ public abstract class AutoDefenseGuidanceMixin {
         }
     }
 
-    @Inject(method = "resolveTarget", at = @At("HEAD"), cancellable = true)
-    private static void firecontrolcompat$resolveTarget(
-            Entity missile,
+    /**
+     * The per-iteration proxy state is cleared where the guidance begins.
+     *
+     * <p>This used to be an injection on {@code resolveTarget(Entity, Contact)}, which returned
+     * the Shaolib position for a Shaolib-threat contact. Fire Control 0.9.1 changed that method
+     * to {@code resolveTarget(Entity, Guided)} returning a record, and {@code Guided} is package
+     * private, so a handler can no longer name its own parameter type and the injection cannot be
+     * written at all. It is not needed: {@link #firecontrolcompat$redirectFindEntityInTick}
+     * already hands the guidance a real proxy entity for a Shaolib threat, so the pack resolves
+     * that entity itself, which is exactly what it did with the injection in place.</p>
+     */
+    @Inject(method = "canLaunch", at = @At("HEAD"), require = 0)
+    private static void firecontrolcompat$clearProxy(
+            ConnectedDisplayBlockEntity display,
             ConnectedDisplayBlockEntity.Contact contact,
-            CallbackInfoReturnable<Vec3> cir
+            CallbackInfoReturnable<Boolean> cir
     ) {
         firecontrolcompat$proxyEntity = null;
         firecontrolcompat$proxyShaolibId = null;
-        if (contact != null && contact.missile() && ShaolibBridge.isShaolibId(contact.key().id())) {
-            cir.setReturnValue(ShaolibBridge.position(contact.key().id()));
-        }
     }
 
     @Redirect(

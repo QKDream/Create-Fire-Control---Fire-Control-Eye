@@ -26,9 +26,11 @@ import net.minecraft.world.phys.Vec3;
  * computers and displays, universal joints, hydraulic heads, rail couplers,
  * physics bogeys, and every weld or joint Synaxis mirrors into that chain) and
  * {@code SubLevelHelper.getLoadingDependencyChain} adds the welded blueprint
- * dependencies. A ship either way is one mother body: a missile must never
- * treat a part of her own hull as a target, and ordnance must keep the markings
- * of the whole group.</p>
+ * dependencies, and {@link ToolgunWelds} adds the pieces the structure toolgun
+ * welded on - by hand or as part of a blueprint placement - because those welds
+ * live in the toolgun's own registry instead of the block entity chain. A ship
+ * either way is one mother body: a missile must never treat a part of her own
+ * hull as a target, and ordnance must keep the markings of the whole group.</p>
  *
  * <p>Everything is cached per game tick, so a battle with dozens of munitions
  * still walks the graph a handful of times per tick.</p>
@@ -131,7 +133,7 @@ public final class PhysicsGroups {
         queue.add(root);
         while (!queue.isEmpty() && members.size() < MAX_MEMBERS) {
             SubLevel current = queue.poll();
-            for (SubLevel linked : links(current)) {
+            for (SubLevel linked : links(level, current)) {
                 if (linked == null || linked.isRemoved()) {
                     continue;
                 }
@@ -143,7 +145,7 @@ public final class PhysicsGroups {
         return Set.copyOf(members);
     }
 
-    private static List<SubLevel> links(SubLevel subLevel) {
+    private static List<SubLevel> links(Level level, SubLevel subLevel) {
         List<SubLevel> linked = new ArrayList<>(8);
         try {
             linked.addAll(SubLevelHelper.getConnectedChain(subLevel));
@@ -154,6 +156,19 @@ public final class PhysicsGroups {
                 linked.addAll(SubLevelHelper.getLoadingDependencyChain(server));
             }
         } catch (Throwable ignored) {
+        }
+        if (FireControlCompat.isModLoaded(ToolgunWelds.MOD_ID)) {
+            try {
+                Set<UUID> welded = new LinkedHashSet<>(4);
+                ToolgunWelds.addWeldPartners(welded, subLevel.getUniqueId());
+                for (UUID partner : welded) {
+                    SubLevel body = resolve(level, partner);
+                    if (body != null) {
+                        linked.add(body);
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
         }
         return linked;
     }

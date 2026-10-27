@@ -72,6 +72,15 @@ public final class GunBallisticsServerSync {
         LAST_SENT.remove(event.getEntity().getUUID());
     }
 
+    /** Muzzle speed the small cannon family is sighted for, in blocks per second. */
+    private static final double SMALL_CANNON_MUZZLE = 140.0D;
+    /** Muzzle speed the medium cannon family is sighted for, in blocks per second. */
+    private static final double MEDIUM_CANNON_MUZZLE = 200.0D;
+    /** Muzzle speed the big cannon family is sighted for at charge four, in blocks per second. */
+    private static final double BIG_CANNON_MUZZLE = 260.0D;
+    /** How much one step of powder charge moves the big cannon muzzle speed. */
+    private static final double CHARGE_SPEED_SHARE = 0.06D;
+
     private static GunBallisticsPayload firecontrolcompat$profile(ServerPlayer player) {
         try {
             StabilizerControllerBlockEntity controller = ControllerTracker.findForPlayerAim(player);
@@ -93,6 +102,27 @@ public final class GunBallisticsServerSync {
             double speed = profile.muzzleSpeed();
             double gravity = profile.gravity();
             double drag = profile.drag();
+            // The settle choice: the lead is solved for the cannon family picked in this mod's
+            // settings, not only for the cannon that happens to be bound. A crew calibrating a
+            // sight picks the family it is sighting for; the bound gun's own gravity and drag are
+            // kept, because those describe the shell rather than the bore.
+            // This computer's own setting, not the global default: two computers on the same
+            // field are usually sighting two different guns.
+            com.qkdream.firecontrolcompat.LeadCannonKind kind =
+                    com.qkdream.firecontrolcompat.ControllerLeadState.kindOf(controller);
+            switch (kind) {
+                case SMALL_CANNON -> speed = SMALL_CANNON_MUZZLE;
+                case MEDIUM_CANNON -> speed = MEDIUM_CANNON_MUZZLE;
+                case BIG_CANNON -> {
+                    // Four is the charge the guns are sighted for; each step above or below moves
+                    // the muzzle speed by a share, which is what shifts the impact point.
+                    double charge = com.qkdream.firecontrolcompat.ControllerLeadState.chargeOf(controller);
+                    speed = BIG_CANNON_MUZZLE * (1.0D + CHARGE_SPEED_SHARE * (charge - 4.0D));
+                }
+                default -> {
+                    // Machine gun: the bound cannon's own profile is already the right one.
+                }
+            }
             if (!Double.isFinite(speed) || speed <= 1.0E-4D
                     || !Double.isFinite(gravity) || !Double.isFinite(drag) || drag < 0.0D) {
                 return firecontrolcompat$none();

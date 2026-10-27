@@ -1,0 +1,19 @@
+{
+  "variants": {
+    "facing=north": {
+      "model": "firecontrolcompat:block/manportable_sonar",
+      "y": 180
+    },
+    "facing=east": {
+      "model": "firecontrolcompat:block/manportable_sonar",
+      "y": 90
+    },
+    "facing=south": {
+      "model": "firecontrolcompat:block/manportable_sonar"
+    },
+    "facing=west": {
+      "model": "firecontrolcompat:block/manportable_sonar",
+      "y": 270
+    }
+  }
+}

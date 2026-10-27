@@ -134,6 +134,9 @@ public final class HeavyAirDefenseCompat {
         missile.setSilent(true);
         MissileGuidanceData.copyFromLauncher(world, pos, missile);
         boolean added = level.addFreshEntity(missile);
+        // See NevaLaunchCompat: a mathematically flown round is captured on its way in, so the
+        // level's answer is false for a launch that did happen.
+        added = com.qkdream.firecontrolcompat.missile.MathGuidedMissiles.spawned(missile, added);
         blockEntity.getPersistentData().putDouble(HEAVY_AA_AMMO_KEY, 0.0);
         blockEntity.setChanged();
         BeamMissileCompat.playLaunchSound(world, pos, 12.0F, 0.8F);

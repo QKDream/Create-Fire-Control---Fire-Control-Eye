@@ -18,6 +18,11 @@ public abstract class RackLoadMixin {
             LevelAccessor world, double x, double y, double z, Entity entity, CallbackInfo ci) {
         if (BeamMissileCompat.tryLoadRack(world, x, y, z, entity)) {
             ci.cancel();
+            return;
         }
+        // A rack that already carries a round is emptied first, so holding a different
+        // bomb and right-clicking swaps it in one click instead of forcing a release.
+        com.qkdream.firecontrolcompat.BombRackCompat.swapLoadedRound(
+                world, net.minecraft.core.BlockPos.containing(x, y, z), entity);
     }
 }

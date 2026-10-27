@@ -185,11 +185,44 @@ public final class CookOffHandler {
         }
     }
 
+    /**
+     * Goes off because something else went off next to it (a blast, a passing projectile, a
+     * fragment).
+     *
+     * <p>A round in its <b>birth grace window</b> is exempt. The launch pad is the one place where
+     * a fresh round is always surrounded by exactly the things that cook a missile off - its own
+     * rack, the rounds on the neighbouring pylons, the fragments of whatever was shot down over the
+     * pad a second ago - so a verdict taken there is not a hit, it is the pad. That is the same
+     * window the interception sweep honours ({@code InFlightRounds.GUARD_TICKS}); without it here,
+     * a round killed by its own sweep left its fragments on the pad and those fragments then cooked
+     * off the next round the instant it appeared, which is the "it explodes before it has left the
+     * tube" report with a second cause behind it.</p>
+     */
     private static void cookOff(BeamRidingMissileEntity missile, String cause) {
-        if (missile.level().isClientSide() || missile.isRemoved() || !DETONATING.add(missile)) {
+        if (missile.level().isClientSide() || missile.isRemoved()) {
+            return;
+        }
+        if (!BeamRidingMissileEntity.safetyFuseArmed(missile)) {
+            // Safety fuse: a heavy or super-heavy round cannot be cooked off inside its arming run.
+            // The launch pad is precisely where a blast or a stray fragment is always present - its
+            // own rack, the rounds on the neighbouring pylons, the fragments of whatever was shot
+            // down over the pad a second ago - so a cook-off verdict taken there is the pad, not a
+            // hit, and it is what "it detonates before it leaves the tube" was.
+            BeamRidingMissileEntity.reportSafetyFuse(missile, "cookoff");
+            return;
+        }
+        if (!DETONATING.add(missile)) {
             return;
         }
         try {
+            if (com.qkdream.firecontrolcompat.missile.InFlightRounds.guarded(missile)) {
+                FireControlCompat.LOGGER.info(
+                        "[firecontrolcompat] cook off skipped: {} reason=guard-age age={} cause={} at={}",
+                        missile.getClass().getSimpleName(),
+                        com.qkdream.firecontrolcompat.missile.InFlightRounds.ageTicks(missile),
+                        cause, missile.position());
+                return;
+            }
             FireControlCompat.LOGGER.info("[firecontrolcompat] cook off: {} at {} cause={}",
                     missile.getClass().getSimpleName(), missile.position(), cause);
             missile.detonate(missile.position(), "cook-off-" + cause);

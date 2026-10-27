@@ -48,7 +48,7 @@ public final class TargetClassifier {
         // Fire Control Eye's own projectiles: beam-rider, infrared (ground/air),
         // small loitering munition and heavy air-defense missile.
         if ("firecontrolcompat".equals(namespace)) {
-            return path.contains("tanshe");
+            return path.contains("tanshe") || path.contains("torpedo");
         }
         return false;
     }

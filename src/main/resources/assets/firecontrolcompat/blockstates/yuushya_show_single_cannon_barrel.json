@@ -1,0 +1,9 @@
+{
+  "multipart": [
+    {
+      "apply": {
+        "model": "firecontrolcompat:block/yuushya_show_single_cannon_barrel"
+      }
+    }
+  ]
+}

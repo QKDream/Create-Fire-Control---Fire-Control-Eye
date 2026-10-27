@@ -36,7 +36,8 @@ public abstract class CbcAmmoRackLinkerUseMixin {
             InteractionHand hand,
             BlockHitResult hit,
             CallbackInfoReturnable<ItemInteractionResult> cir) {
-        if (WeaponHudLinker.isLinker(player.getMainHandItem())) {
+        if (WeaponHudLinker.isLinker(player.getMainHandItem())
+                || com.qkdream.firecontrolcompat.AmmoClipboardItem.isClipboard(player.getMainHandItem())) {
             cir.setReturnValue(ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION);
         }
     }

@@ -401,8 +401,22 @@ public final class BombRackCompat {
     public static boolean fireSelected(
             Level level, BlockPos controller, List<BindingRef> racks,
             boolean terminal, boolean pod, boolean lasing) {
-        List<BindingRef> chosen = selectedRacks(level, controller, racks);
-        for (BindingRef rack : chosen) {
+        return fireOneOf(level, selectedRacks(level, controller, racks), terminal, pod, lasing);
+    }
+
+    /**
+     * Releases one round from the first of these racks that may go, and stops there.
+     *
+     * <p>The body of {@link #fireSelected}, split out because 0.9.4 names each bomb family with a
+     * <b>weapon type of its own</b> - {@code GLIDE_BOMB}, {@code JDAM_BOMB}, {@code LASER_BOMB} and
+     * the rest of {@code MianbaoBombCompat}'s table - so the trigger's kind can be read off the
+     * pack's own selection instead of guessed from this mod's label order. One press, one round,
+     * and a kind whose guidance is not satisfied releases nothing at all.</p>
+     */
+    public static boolean fireOneOf(
+            Level level, List<BindingRef> candidates,
+            boolean terminal, boolean pod, boolean lasing) {
+        for (BindingRef rack : candidates) {
             // The whole chain in one line: which label the trigger is on, which rack that
             // resolved to, what that rack calls itself, and which launch it will take.
             FireControlCompat.LOGGER.info(
@@ -449,8 +463,56 @@ public final class BombRackCompat {
             }
         }
         FireControlCompat.LOGGER.info("[firecontrolcompat] ground release found nothing among {} racks of this kind",
-                chosen.size());
+                candidates.size());
         return false;
+    }
+
+    /**
+     * Whether the pack is calling this kind a bomb of its own.
+     *
+     * <p>0.9.4 gave every bomb family a weapon type of its own. Its own release then walks the racks
+     * by that type and never asks this mod's layer, so a glide bomb or a JDAM selected on the HUD
+     * was released by the pack's stock path with no ground point written onto the rail - it fell
+     * away from the aircraft with nothing to steer to. That type is the trigger for this mod's
+     * release now, exactly like {@code AIR_TO_GROUND_DIRECT} always was for the racks the pack has
+     * no type for.</p>
+     */
+    public static boolean isNativeBombSelection(MianbaoAircraftCompat.WeaponType type) {
+        if (type == null) {
+            return false;
+        }
+        try {
+            return com.hooya.stabilizedturret.content.controller.MianbaoBombCompat.isBomb(type);
+        } catch (RuntimeException | LinkageError ignored) {
+            // A pack that has no such table answers by name only.
+            String name = type.name();
+            return name.endsWith("_BOMB") || "BOMB".equals(name) || "JDAM".equals(name);
+        }
+    }
+
+    /**
+     * The racks the pack's own selection names, for a weapon type it assigns itself.
+     *
+     * <p>Empty when the pack cannot answer for these rails ({@code weaponAt} needs the position's
+     * chunk to be loaded in the level the computer asked about, which a Sable sub-level does not
+     * always satisfy), in which case the caller keeps using this mod's own kind pointer.</p>
+     */
+    public static List<BindingRef> racksForSelection(
+            Level level, List<BindingRef> racks, MianbaoAircraftCompat.WeaponType type) {
+        if (level == null || racks == null || type == null) {
+            return List.of();
+        }
+        List<BindingRef> chosen = new ArrayList<>();
+        for (BindingRef rack : racks) {
+            try {
+                if (MianbaoAircraftCompat.weaponAt(level, rack) == type) {
+                    chosen.add(rack);
+                }
+            } catch (RuntimeException | LinkageError ignored) {
+                // a rail the pack cannot name is not one of this selection
+            }
+        }
+        return chosen;
     }
 
     /** Launch procedures, found once each. */
@@ -896,9 +958,26 @@ public final class BombRackCompat {
             }
         }
         rememberPending(server, ref, pos);
-        boolean thrown = spec.special()
-                ? launchNuclear(server, pos, state)
-                : runProcedure(spec.procedure(), server, pos);
+        // A glide bomb is flown by fire control's mathematical mode from now on (see
+        // MathGuidedMissiles), and that mode has to know which rack threw it: the bomb leaves through
+        // 面包学's own procedure, which only copies the aim point onto the entity *after* it has
+        // joined the level - and a round the mathematical mode captures never joins at all. The
+        // marker is read inside the join event, on this same thread, so the aim point is handed over
+        // here instead.
+        boolean glide = spec.name() != null && spec.name().contains("滑翔");
+        if (glide) {
+            beginMathRelease(server, pos);
+        }
+        boolean thrown;
+        try {
+            thrown = spec.special()
+                    ? launchNuclear(server, pos, state)
+                    : runProcedure(spec.procedure(), server, pos);
+        } finally {
+            if (glide) {
+                endMathRelease();
+            }
+        }
         if (!thrown) {
             forgetPending(pos);
             return false;
@@ -1297,27 +1376,17 @@ public final class BombRackCompat {
                 how, BuiltInRegistries.ENTITY_TYPE.getKey(round.getType()), round.position());
     }
 
-    /** Adds the launching structure's own velocity to the round. */
+    /**
+     * No longer adds the launching structure's velocity to the round.
+     *
+     * <p>Fire control 0.9.3 flies the bombs it drops itself, with the carrier's velocity folded in
+     * by its own math flight, and the predicted impact ring is computed from that same flight. Adding
+     * the structure's speed here as well made the round leave with twice the deck speed: the bomb
+     * overshot the ring, and the ring was drawn for a flight the round was not taking. The round is
+     * therefore left with whatever the pack gave it.</p>
+     */
     private static void inheritCarrierVelocity(Entity round, BindingRef rack) {
-        if (rack == null || rack.subLevelId() == null || round == null || round.level() == null) {
-            return;
-        }
-        try {
-            Vec3 carrier = MianbaoAircraftCompat.carrierVelocityAtMuzzle(round.level(), rack);
-            if (carrier == null || carrier.lengthSqr() < 1.0E-8D) {
-                return;
-            }
-            // Raised on request: a bomb leaving a rack on a fast aircraft still fell
-            // behind the aircraft's frame, so it now takes half again as much of the
-            // launcher's own speed.
-            Vec3 velocity = MianbaoMissileCompat.getWorldVelocity(round)
-                    .add(carrier.scale(BOMB_CARRIER_SHARE));
-            MianbaoMissileCompat.setWorldVelocity(round, velocity);
-            FireControlCompat.LOGGER.info(
-                    "[firecontrolcompat] bomb inherited carrier velocity type={} carrier={} total={}",
-                    BuiltInRegistries.ENTITY_TYPE.getKey(round.getType()), carrier, velocity);
-        } catch (Throwable ignored) {
-        }
+        // Deliberately empty: see the note above.
     }
 
     /**
@@ -1350,9 +1419,94 @@ public final class BombRackCompat {
         }
     }
 
+    /**
+     * The glide rack whose release is in flight on this thread.
+     *
+     * <p>Read by {@link #claimMathRelease} inside the entity join event, which 面包学's release
+     * procedure fires from the same thread between the two lines that write the aim point. A
+     * thread-local is the whole hand-off: the server ticks on one thread, one release runs at a
+     * time, and the value is cleared in a {@code finally} so a throw cannot leave it behind.</p>
+     */
+    private static final ThreadLocal<MathRelease> MATH_RELEASE = new ThreadLocal<>();
+
+    /** One glide release: the level it happened in and the rack that threw the round. */
+    private record MathRelease(ServerLevel level, BlockPos pos) {
+    }
+
+    /** Marks the release of this rack as one the mathematical flight mode may adopt. */
+    private static void beginMathRelease(ServerLevel level, BlockPos pos) {
+        MATH_RELEASE.set(new MathRelease(level, pos));
+    }
+
+    /** Ends the marker, whatever the release did. */
+    private static void endMathRelease() {
+        MATH_RELEASE.remove();
+    }
+
+    /**
+     * The world-space point a bomb of ours is being released at, or null when this bomb is not ours.
+     *
+     * <p>Returns null for every bomb this mod did not throw - a bomb the pack released on its own
+     * path is followed by {@code MianbaoBombProjectileHandler}, which is a complete drive of its
+     * own, and two drivers for one bomb would step it twice.</p>
+     *
+     * <p>The aim point is copied onto the bomb <b>here</b> rather than by the pack, because the
+     * pack's copy happens after the spawn and a bomb the mathematical mode captures never joins the
+     * level, so the pack's search for it finds nothing. The coordinates are copied exactly as the
+     * rack holds them; moving them into world space is the driver's job once it knows where the bomb
+     * ended up, because a bomb that fire control declines to capture keeps flying in the rack's own
+     * space and would be steered at a point twenty million blocks away if this converted early.</p>
+     */
+    public static Vec3 claimMathRelease(Level level, Entity bomb) {
+        if (level == null || bomb == null) {
+            return null;
+        }
+        MathRelease release = MATH_RELEASE.get();
+        if (release == null || release.pos() == null) {
+            return null;
+        }
+        try {
+            BlockEntity rack = release.level() == null ? null : release.level().getBlockEntity(release.pos());
+            if (rack == null) {
+                rack = SubLevelPositions.blockEntity(level, release.pos());
+            }
+            if (rack == null) {
+                return null;
+            }
+            Vec3 rackCentre = Vec3.atCenterOf(release.pos());
+            if (bomb.position().distanceToSqr(rackCentre) > 64.0D) {
+                // Not the round of this release: a bomb somebody else threw while we were releasing.
+                return null;
+            }
+            CompoundTag data = rack.getPersistentData();
+            if (!data.getBoolean("坐标模式")) {
+                // No point was written on this rack, so there is nothing to glide to.
+                return null;
+            }
+            Vec3 stored = new Vec3(data.getDouble("target_x"), data.getDouble("target_y"),
+                    data.getDouble("target_z"));
+            if (!Double.isFinite(stored.x) || !Double.isFinite(stored.y) || !Double.isFinite(stored.z)
+                    || (Math.abs(stored.x) < 1.0E-6 && Math.abs(stored.y) < 1.0E-6
+                            && Math.abs(stored.z) < 1.0E-6)) {
+                return null;
+            }
+            CompoundTag tag = bomb.getPersistentData();
+            tag.putBoolean("坐标模式", true);
+            tag.putDouble("target_x", stored.x);
+            tag.putDouble("target_y", stored.y);
+            tag.putDouble("target_z", stored.z);
+            tag.remove("firecontrolcompat:math_bomb_world");
+            FireControlCompat.LOGGER.info(
+                    "[firecontrolcompat] math-guided: bomb aim rack={} target={} bomb={}",
+                    release.pos().toShortString(), stored, bomb.getType());
+            return stored;
+        } catch (RuntimeException | LinkageError ignored) {
+            return null;
+        }
+    }
+
     /** Whether the round is the high-drag bomb, the one family meant to slow down. */
-    private static boolean isHighDrag(Entity round) {
-        ResourceLocation type = BuiltInRegistries.ENTITY_TYPE.getKey(round.getType());
+    private static boolean isHighDrag(Entity round) {        ResourceLocation type = BuiltInRegistries.ENTITY_TYPE.getKey(round.getType());
         return type != null && type.getPath().contains("highresistance");
     }
 

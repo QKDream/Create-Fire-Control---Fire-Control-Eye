@@ -15,7 +15,15 @@ import net.neoforged.neoforge.network.registration.PayloadRegistrar;
  * client-bound directions never collide in the payload registry.
  */
 public record LeadSettingsSyncPayload(
-        boolean gunLead, boolean verticalLaunch, double proximityRange)
+        boolean gunLead,
+        boolean verticalLaunch,
+        double proximityRange,
+        boolean speedGate,
+        double speedGateSpeed,
+        boolean imageLock,
+        boolean torpedoHoldDepth,
+        double torpedoDepth,
+        double torpedoActivation)
         implements CustomPacketPayload {
 
     public static final Type<LeadSettingsSyncPayload> TYPE = new Type<>(
@@ -29,11 +37,25 @@ public record LeadSettingsSyncPayload(
         buffer.writeBoolean(payload.gunLead);
         buffer.writeBoolean(payload.verticalLaunch);
         buffer.writeDouble(payload.proximityRange);
+        buffer.writeBoolean(payload.speedGate);
+        buffer.writeDouble(payload.speedGateSpeed);
+        buffer.writeBoolean(payload.imageLock);
+        buffer.writeBoolean(payload.torpedoHoldDepth);
+        buffer.writeDouble(payload.torpedoDepth);
+        buffer.writeDouble(payload.torpedoActivation);
     }
 
     private static LeadSettingsSyncPayload read(RegistryFriendlyByteBuf buffer) {
         return new LeadSettingsSyncPayload(
-                buffer.readBoolean(), buffer.readBoolean(), buffer.readDouble());
+                buffer.readBoolean(),
+                buffer.readBoolean(),
+                buffer.readDouble(),
+                buffer.readBoolean(),
+                buffer.readDouble(),
+                buffer.readBoolean(),
+                buffer.readBoolean(),
+                buffer.readDouble(),
+                buffer.readDouble());
     }
 
     public static void register(RegisterPayloadHandlersEvent event) {
@@ -43,7 +65,15 @@ public record LeadSettingsSyncPayload(
 
     public static void handleClient(LeadSettingsSyncPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> FireControlLeadSettings.apply(
-                payload.gunLead, payload.verticalLaunch, payload.proximityRange));
+                payload.gunLead,
+                payload.verticalLaunch,
+                payload.proximityRange,
+                payload.speedGate,
+                payload.speedGateSpeed,
+                payload.imageLock,
+                payload.torpedoHoldDepth,
+                payload.torpedoDepth,
+                payload.torpedoActivation));
     }
 
     @Override

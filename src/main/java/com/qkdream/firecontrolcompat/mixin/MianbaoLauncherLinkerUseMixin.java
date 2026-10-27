@@ -4,6 +4,10 @@ import com.qkdream.firecontrolcompat.WeaponHudLinker;
 import net.mcreator.myfirstmod.block.AntiairmissilelauncherblockBlock;
 import net.mcreator.myfirstmod.block.AntiairmissilelauncherleftBlock;
 import net.mcreator.myfirstmod.block.AntiairmissilelauncherrightBlock;
+import net.mcreator.myfirstmod.block.AntiairmissilelauncherthirdH1Block;
+import net.mcreator.myfirstmod.block.AntiairmissilelauncherthirdH1sandBlock;
+import net.mcreator.myfirstmod.block.AntiairmissilelauncherthirdH2Block;
+import net.mcreator.myfirstmod.block.AntiairmissilelauncherthirdH2sandBlock;
 import net.mcreator.myfirstmod.block.AntitankemissilelauncherBlock;
 import net.mcreator.myfirstmod.block.Antitankemissilelauncherh2Block;
 import net.mcreator.myfirstmod.block.AntitankmissilelaunchererxingLEFTBlock;
@@ -16,6 +20,7 @@ import net.mcreator.myfirstmod.block.AgmMissile2rackBlock;
 import net.mcreator.myfirstmod.block.AgmMissile3rackBlock;
 import net.mcreator.myfirstmod.block.AgmMissile4rackBlock;
 import net.mcreator.myfirstmod.block.AntiradiationmissilerackBlock;
+import net.mcreator.myfirstmod.block.CruisemissilelowrackBlock;
 import net.mcreator.myfirstmod.block.CruisemissilerackBlock;
 import net.mcreator.myfirstmod.block.EarthpenetratorbombrackBlock;
 import net.mcreator.myfirstmod.block.FarMissile1rackBlock;
@@ -44,13 +49,20 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * launchers and weapon racks consume every main-hand click in
  * {@code Block#useWithoutItem}
  * (which runs before the held item's useOn in 1.21.1), so the linker never
- * receives the click. While the player is holding the linker, let the click
- * pass through instead of running the reload logic.
+ * receives the click. While the player is holding the linker or the ammunition
+ * loading table, let the click pass through instead of running the reload logic, so
+ * a launcher can be bound and recorded. Every air-defense launcher variant of the
+ * 2.5.3 pack is listed, the three-tube H1/H2 (and their desert versions) included:
+ * they all reload through the same procedures the missile mixins already hook.
  */
 @Mixin({
         AntiairmissilelauncherblockBlock.class,
         AntiairmissilelauncherleftBlock.class,
         AntiairmissilelauncherrightBlock.class,
+        AntiairmissilelauncherthirdH1Block.class,
+        AntiairmissilelauncherthirdH1sandBlock.class,
+        AntiairmissilelauncherthirdH2Block.class,
+        AntiairmissilelauncherthirdH2sandBlock.class,
         AntitankemissilelauncherBlock.class,
         Antitankemissilelauncherh2Block.class,
         AntitankmissilelaunchererxingLEFTBlock.class,
@@ -70,6 +82,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
         MissilerackBlock.class,
         OpticalguidedmissilerackBlock.class,
         AntiradiationmissilerackBlock.class,
+        CruisemissilelowrackBlock.class,
         CruisemissilerackBlock.class,
         NuclearcruisemissilerackBlock.class,
         Jdam2rackBlock.class,
@@ -86,7 +99,8 @@ public abstract class MianbaoLauncherLinkerUseMixin {
             Player player,
             BlockHitResult hit,
             CallbackInfoReturnable<InteractionResult> cir) {
-        if (WeaponHudLinker.isLinker(player.getMainHandItem())) {
+        if (WeaponHudLinker.isLinker(player.getMainHandItem())
+                || com.qkdream.firecontrolcompat.AmmoClipboardItem.isClipboard(player.getMainHandItem())) {
             cir.setReturnValue(InteractionResult.PASS);
         }
     }

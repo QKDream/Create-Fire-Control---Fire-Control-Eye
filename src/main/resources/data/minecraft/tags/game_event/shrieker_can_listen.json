@@ -1,0 +1,10 @@
+{
+  "values": [
+    "firecontrolcompat:machine_run",
+    "firecontrolcompat:running_gear",
+    "firecontrolcompat:gun_fire",
+    "firecontrolcompat:missile_flight",
+    "firecontrolcompat:torpedo_run",
+    "firecontrolcompat:water_impact"
+  ]
+}

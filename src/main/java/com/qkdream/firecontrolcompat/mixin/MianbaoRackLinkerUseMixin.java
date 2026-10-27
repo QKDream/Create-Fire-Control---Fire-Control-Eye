@@ -2,6 +2,7 @@ package com.qkdream.firecontrolcompat.mixin;
 
 import com.qkdream.firecontrolcompat.WeaponHudLinker;
 import net.mcreator.myfirstmod.block.RackBlock;
+import net.mcreator.myfirstmod.block.AntiradiationmissilerackBlock;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -25,8 +26,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * method a target class does not have aborts mixin application and breaks mod
  * loading, so both hooks are declared with {@code require = 0}: whichever one
  * exists wins and a future rename cannot take the whole game down again.</p>
+ *
+ * <p>The loaded anti-radiation rack is a block of its own rather than the rack,
+ * and its own click handler opens 面包学's rack screen. A rail that has just been
+ * loaded is exactly the one a crew wants to link, so the same click is let
+ * through for it.</p>
  */
-@Mixin(RackBlock.class)
+@Mixin({RackBlock.class, AntiradiationmissilerackBlock.class})
 public abstract class MianbaoRackLinkerUseMixin {
 
     @Inject(method = "useWithoutItem", at = @At("HEAD"), cancellable = true, require = 0)
@@ -37,7 +43,8 @@ public abstract class MianbaoRackLinkerUseMixin {
             Player player,
             BlockHitResult hit,
             CallbackInfoReturnable<InteractionResult> cir) {
-        if (WeaponHudLinker.isLinker(player.getMainHandItem())) {
+        if (WeaponHudLinker.isLinker(player.getMainHandItem())
+                || com.qkdream.firecontrolcompat.AmmoClipboardItem.isClipboard(player.getMainHandItem())) {
             cir.setReturnValue(InteractionResult.PASS);
         }
     }
@@ -52,7 +59,8 @@ public abstract class MianbaoRackLinkerUseMixin {
             InteractionHand hand,
             BlockHitResult hit,
             CallbackInfoReturnable<ItemInteractionResult> cir) {
-        if (WeaponHudLinker.isLinker(player.getMainHandItem())) {
+        if (WeaponHudLinker.isLinker(player.getMainHandItem())
+                || com.qkdream.firecontrolcompat.AmmoClipboardItem.isClipboard(player.getMainHandItem())) {
             cir.setReturnValue(ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION);
         }
     }

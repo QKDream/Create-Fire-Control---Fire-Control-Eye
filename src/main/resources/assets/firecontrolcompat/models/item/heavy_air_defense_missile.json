@@ -1,6 +1,3 @@
 {
-  "parent": "firecontrolcompat:entity/heavy_air_defense_missile",
-  "textures": {
-    "particle": "firecontrolcompat:block/heavy_air_defense_missile_texture2"
-  }
+  "parent": "minecraft:builtin/entity"
 }

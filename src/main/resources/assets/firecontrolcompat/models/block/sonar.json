@@ -1,0 +1,9 @@
+{
+  "parent": "mianbaos_modernwarfare:custom/ji_zai_xiang_kong_zhen_lei_da_",
+  "textures": {
+    "all": "mianbaos_modernwarfare:block/ji_zai_xiang_kong_zhen_lei_da_",
+    "particle": "mianbaos_modernwarfare:block/ji_zai_xiang_kong_zhen_lei_da_",
+    "0": "mianbaos_modernwarfare:block/ji_zai_xiang_kong_zhen_lei_da_"
+  },
+  "render_type": "solid"
+}

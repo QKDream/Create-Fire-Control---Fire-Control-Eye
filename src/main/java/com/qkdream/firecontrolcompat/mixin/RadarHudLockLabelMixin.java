@@ -1,103 +1,33 @@
 package com.qkdream.firecontrolcompat.mixin;
 
-import com.hooya.stabilizedturret.client.ClientRadarState;
 import com.hooya.stabilizedturret.client.RadarHudRenderer;
-import com.qkdream.firecontrolcompat.client.LockLabelText;
-import java.util.UUID;
+import com.qkdream.firecontrolcompat.client.LockFrameHud;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.network.chat.Component;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Unique;
-import org.spongepowered.asm.mixin.gen.Invoker;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Draws the locked/selected target category under the radar lock box in the
- * world HUD: {@code sable结构} for Sable sublevels, {@code 弹药} for
- * Shaolib/entity ordnance and {@code 生物} for living entities.
+ * Adds the locked target's category above the fire control lock frame.
  *
- * <p>In the ground branch vanilla replaces the searching corner frame of the
- * locked contact with the connected square. This mixin keeps the corner frame
- * and wraps it with the connected square, so the locked target keeps its box
- * and gains the extra TWS lock ring.
+ * <p>Fire control 0.9.3 replaced its corner and connected squares with one frame class that is
+ * package private, and draws the frame's own read-out below the box: distance and closing rate at
+ * +43 to the right, height above ground centred at +41, motion indicator centred at +84, in a space
+ * scaled by {@code guiHeight / 1440}. The category this mod has always drawn sat at
+ * {@code box bottom + 12}, which now lands on the height line, so it is drawn above the box.</p>
+ *
+ * <p>The hook runs at the tail of the world frame pass and asks the pack's own projection where the
+ * locked contact is, so nothing of the pack's frame is reimplemented or duplicated: the box stays
+ * theirs, this mod adds the one line it always added.</p>
  */
 @Mixin(RadarHudRenderer.class)
 public abstract class RadarHudLockLabelMixin {
 
-    @Invoker("drawConnectedSquare")
-    private static void invokeDrawConnectedSquare(GuiGraphics graphics, int x, int y, int half) {
-        throw new AbstractMethodError();
-    }
-
-    @Invoker("drawCornerSquare")
-    private static void invokeDrawCornerSquare(GuiGraphics graphics, int x, int y, int half) {
-        throw new AbstractMethodError();
-    }
-
-    @Redirect(
-            method = "renderWorldFrames",
-            at = @At(
-                    value = "INVOKE",
-                    target = "Lcom/hooya/stabilizedturret/client/RadarHudRenderer;drawConnectedSquare(Lnet/minecraft/client/gui/GuiGraphics;III)V"
-            )
-    )
-    private static void firecontrolcompat$connectedSquareWithLabel(GuiGraphics graphics, int x, int y, int half) {
-        invokeDrawCornerSquare(graphics, x, y, half);
-        invokeDrawConnectedSquare(graphics, x, y, half + 4);
-        firecontrolcompat$drawGroundLockLabel(graphics, ClientRadarState.getLockedTarget(), x, y, half + 4);
-    }
-
-    @Redirect(
-            method = "renderWorldFrames",
-            at = @At(
-                    value = "INVOKE",
-                    target = "Lcom/hooya/stabilizedturret/client/RadarHudRenderer;drawCornerSquare(Lnet/minecraft/client/gui/GuiGraphics;III)V"
-            )
-    )
-    private static void firecontrolcompat$cornerSquareWithLabel(GuiGraphics graphics, int x, int y, int half) {
-        invokeDrawCornerSquare(graphics, x, y, half);
-        if (ClientRadarState.isAircraftMode()) {
-            firecontrolcompat$drawTypeLabel(graphics, firecontrolcompat$aircraftBoxTarget(), x, y, half);
-        }
-    }
-
-    @Unique
-    private static UUID firecontrolcompat$aircraftBoxTarget() {
-        UUID selected = ClientRadarState.getSelectedTarget();
-        for (ClientRadarState.Contact contact : ClientRadarState.getContacts()) {
-            if (selected != null && contact.id().equals(selected)) {
-                return selected;
-            }
-        }
-        UUID locked = ClientRadarState.getLockedTarget();
-        for (ClientRadarState.Contact contact : ClientRadarState.getContacts()) {
-            if (locked != null && contact.id().equals(locked)) {
-                return locked;
-            }
-        }
-        return null;
-    }
-
-    @Unique
-    private static void firecontrolcompat$drawTypeLabel(GuiGraphics graphics, UUID target, int x, int y, int half) {
-        Component label = LockLabelText.component(target);
-        if (label == null) {
-            return;
-        }
-        Minecraft minecraft = Minecraft.getInstance();
-        graphics.drawCenteredString(minecraft.font, label, x, y + half + 12, LockLabelText.LOCK_GREEN);
-    }
-
-    @Unique
-    private static void firecontrolcompat$drawGroundLockLabel(
-            GuiGraphics graphics, UUID target, int x, int y, int half) {
-        Component label = LockLabelText.groundLockComponent(target);
-        if (label == null) {
-            return;
-        }
-        Minecraft minecraft = Minecraft.getInstance();
-        graphics.drawCenteredString(minecraft.font, label, x, y + half + 12, LockLabelText.LOCK_GREEN);
+    @Inject(method = "renderWorldFrames", at = @At("TAIL"), require = 0)
+    private static void firecontrolcompat$drawCategoryAboveFrame(
+            GuiGraphics graphics, Minecraft minecraft, float partialTick, CallbackInfo ci) {
+        LockFrameHud.drawRadarLabel(graphics, minecraft, minecraft.getWindow().getGuiScaledHeight());
     }
 }

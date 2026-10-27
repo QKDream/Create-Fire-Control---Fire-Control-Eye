@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "firecontrolcompat:block/neva_launcher"
+  }
+}

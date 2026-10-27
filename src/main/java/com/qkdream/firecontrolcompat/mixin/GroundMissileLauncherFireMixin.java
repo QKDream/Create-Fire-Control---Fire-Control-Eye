@@ -3,6 +3,7 @@ package com.qkdream.firecontrolcompat.mixin;
 import com.qkdream.firecontrolcompat.HeavyAirDefenseCompat;
 import net.mcreator.myfirstmod.procedures.GroundmissilelaunchergoProcedure;
 import net.minecraft.world.level.LevelAccessor;
+import net.minecraft.world.level.block.state.BlockState;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -14,7 +15,7 @@ public abstract class GroundMissileLauncherFireMixin {
 
     @Inject(method = "execute", at = @At("HEAD"), cancellable = true)
     private static void firecontrolcompat$fireHeavyMissile(
-            LevelAccessor world, double x, double y, double z, CallbackInfo ci) {
+            LevelAccessor world, double x, double y, double z, BlockState blockstate, CallbackInfo ci) {
         if (HeavyAirDefenseCompat.tryLaunchSilo(world, x, y, z)) {
             ci.cancel();
         }

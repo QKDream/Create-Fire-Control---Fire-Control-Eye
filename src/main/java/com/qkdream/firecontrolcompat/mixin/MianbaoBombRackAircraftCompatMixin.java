@@ -1,13 +1,8 @@
 package com.qkdream.firecontrolcompat.mixin;
 
-import java.util.List;
-import com.hooya.stabilizedturret.content.controller.BindingRef;
 import com.hooya.stabilizedturret.content.controller.MianbaoAircraftCompat;
 import com.qkdream.firecontrolcompat.BombRackCompat;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.level.block.state.BlockState;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -15,17 +10,16 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Lets fire control hold 面包学's bomb racks and their rounds.
+ * Keeps 面包学's bomb racks visible to the fire control computer as weapon racks.
  *
- * <p>A bomb rack answers as the air-to-ground type, so it binds, counts and is
- * selected exactly like an air-to-ground rail, and the release runs the rack's
- * own launch - see {@link BombRackCompat#fire} - so the drop, the fall and the
- * burst are all 面包学's.</p>
- *
- * <p>The rounds themselves answer as air-to-ground ordnance, which is what puts
- * them on the radar and on the automatic air-defense display: a computer holding
- * a bomb rack can be told to release at a place, and a ship's automatic defense
- * sees the falling bombs coming in.</p>
+ * <p>Fire control 0.9.3 knows the bomb racks itself and flies the bombs it drops with its own math
+ * flight, complete with the predicted impact ring. Everything this hook used to add on top of that -
+ * answering the weapon type for a loaded bomb rack, releasing the rack through its own procedure,
+ * and handing the bombs to the air-to-ground guidance - has been removed: each of those took the
+ * release out of the pack's hands, so the round never entered the math flight and the ring was
+ * drawn for a flight the bomb was not taking. What is left is only what the pack still needs from
+ * this mod: the empty and loaded bomb-rack blocks are racks, and the loaded variant is the same rack
+ * as the empty one when the rounds come and go.</p>
  */
 @Mixin(MianbaoAircraftCompat.class)
 public abstract class MianbaoBombRackAircraftCompatMixin {
@@ -46,59 +40,6 @@ public abstract class MianbaoBombRackAircraftCompatMixin {
         if (!cir.getReturnValueZ()
                 && BombRackCompat.isBombRackId(first)
                 && BombRackCompat.isBombRackId(second)) {
-            cir.setReturnValue(true);
-        }
-    }
-
-    /** A rack carrying a round answers as the air-to-ground rack, or as the laser one. */
-    @Inject(method = "weaponAt", at = @At("RETURN"), cancellable = true, require = 0)
-    private static void firecontrolcompat$bombRackWeapon(
-            Level level, BindingRef ref, CallbackInfoReturnable<MianbaoAircraftCompat.WeaponType> cir) {
-        if (cir.getReturnValue() != null) {
-            return;
-        }
-        if (BombRackCompat.isLoadedBombRack(level, ref)) {
-            cir.setReturnValue(MianbaoAircraftCompat.WeaponType.AIR_TO_GROUND_DIRECT);
-        } else if (BombRackCompat.isLoadedLaserRack(level, ref)) {
-            // The 4-tube laser rack rides the laser line of the weapon selector,
-            // which is where a crew looks for a laser round.
-            cir.setReturnValue(MianbaoAircraftCompat.WeaponType.LASER_GUIDED);
-        }
-    }
-
-    /** The release itself is the rack's own launch, not the air-to-ground missile. */
-    @Inject(method = "fireOne", at = @At("HEAD"), cancellable = true, require = 0)
-    private static void firecontrolcompat$releaseBombRack(
-            Level level, BindingRef ref, MianbaoAircraftCompat.WeaponType expected,
-            CallbackInfoReturnable<Boolean> cir) {
-        if (ref == null
-                || (!BombRackCompat.isLoadedBombRack(level, ref)
-                && !BombRackCompat.isLoadedLaserRack(level, ref))) {
-            return;
-        }
-        cir.setReturnValue(BombRackCompat.fire(level, ref));
-    }
-
-    /**
-     * A bomb - and a cruise missile - is air-to-ground ordnance.
-     *
-     * <p>This is the pack's own entry point for guiding an air-to-ground round at the
-     * computer's target: the bombs are answered here already, which is why a glide bomb
-     * locks and steers, while a cruise round was not and was therefore flown as an ordinary
-     * entity - it fell, slowed, and hit the ground. Answering for the cruise rounds as well
-     * is what puts them on the same guidance the pack gives its own air-to-ground missiles,
-     * which is the mechanism asked for.</p>
-     */
-    @Inject(method = "isAirToGroundMissile", at = @At("RETURN"), cancellable = true, require = 0)
-    private static void firecontrolcompat$bombIsGroundOrdnance(
-            Entity entity, CallbackInfoReturnable<Boolean> cir) {
-        if (cir.getReturnValueZ()) {
-            return;
-        }
-        if (BombRackCompat.isBombEntity(entity)) {
-            // Bombs only. A cruise round is flown by this mod's own control so that it keeps
-            // its speed and ballistic character, so it is deliberately not offered to the
-            // pack for guidance.
             cir.setReturnValue(true);
         }
     }

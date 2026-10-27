@@ -1,0 +1,224 @@
+{
+  "variants": {
+    "facing=up,rotation=0,mirrored=false": {
+      "model": "firecontrolcompat:block/schale"
+    },
+    "facing=down,rotation=0,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 180
+    },
+    "facing=up,rotation=1,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "y": 90
+    },
+    "facing=down,rotation=1,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 180,
+      "y": 90
+    },
+    "facing=up,rotation=2,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "y": 180
+    },
+    "facing=down,rotation=2,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 180,
+      "y": 180
+    },
+    "facing=up,rotation=3,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "y": 270
+    },
+    "facing=down,rotation=3,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 180,
+      "y": 270
+    },
+    "facing=north,rotation=0,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 180
+    },
+    "facing=north,rotation=1,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 180
+    },
+    "facing=north,rotation=2,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 180
+    },
+    "facing=north,rotation=3,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 180
+    },
+    "facing=south,rotation=0,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270
+    },
+    "facing=south,rotation=1,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270
+    },
+    "facing=south,rotation=2,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270
+    },
+    "facing=south,rotation=3,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270
+    },
+    "facing=east,rotation=0,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 270
+    },
+    "facing=east,rotation=1,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 270
+    },
+    "facing=east,rotation=2,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 270
+    },
+    "facing=east,rotation=3,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 270
+    },
+    "facing=west,rotation=0,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 90
+    },
+    "facing=west,rotation=1,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 90
+    },
+    "facing=west,rotation=2,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 90
+    },
+    "facing=west,rotation=3,mirrored=false": {
+      "model": "firecontrolcompat:block/schale",
+      "x": 270,
+      "y": 90
+    },
+    "facing=up,rotation=0,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored"
+    },
+    "facing=down,rotation=0,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 180
+    },
+    "facing=up,rotation=1,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "y": 90
+    },
+    "facing=down,rotation=1,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 180,
+      "y": 90
+    },
+    "facing=up,rotation=2,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "y": 180
+    },
+    "facing=down,rotation=2,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 180,
+      "y": 180
+    },
+    "facing=up,rotation=3,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "y": 270
+    },
+    "facing=down,rotation=3,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 180,
+      "y": 270
+    },
+    "facing=north,rotation=0,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 180
+    },
+    "facing=north,rotation=1,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 180
+    },
+    "facing=north,rotation=2,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 180
+    },
+    "facing=north,rotation=3,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 180
+    },
+    "facing=south,rotation=0,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270
+    },
+    "facing=south,rotation=1,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270
+    },
+    "facing=south,rotation=2,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270
+    },
+    "facing=south,rotation=3,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270
+    },
+    "facing=east,rotation=0,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 270
+    },
+    "facing=east,rotation=1,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 270
+    },
+    "facing=east,rotation=2,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 270
+    },
+    "facing=east,rotation=3,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 270
+    },
+    "facing=west,rotation=0,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 90
+    },
+    "facing=west,rotation=1,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 90
+    },
+    "facing=west,rotation=2,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 90
+    },
+    "facing=west,rotation=3,mirrored=true": {
+      "model": "firecontrolcompat:block/schale_mirrored",
+      "x": 270,
+      "y": 90
+    }
+  }
+}

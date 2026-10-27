@@ -1,0 +1,7 @@
+{
+  "parent": "mianbaos_modernwarfare:custom/gao_bao_shi_jue_zhi_dao_yu_lei_",
+  "textures": {
+    "0": "mianbaos_modernwarfare:block/gao_bao_shi_jue_zhi_dao_yu_lei_",
+    "particle": "mianbaos_modernwarfare:block/gao_bao_shi_jue_zhi_dao_yu_lei_"
+  }
+}

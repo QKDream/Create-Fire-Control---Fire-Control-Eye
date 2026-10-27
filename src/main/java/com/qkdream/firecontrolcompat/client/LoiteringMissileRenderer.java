@@ -41,8 +41,11 @@ public class LoiteringMissileRenderer extends EntityRenderer<LoiteringMissileEnt
         float pitch = Mth.lerp(partialTicks, entity.xRotO, entity.getXRot());
         poseStack.mulPose(Axis.YP.rotationDegrees(180.0F + yaw));
         poseStack.mulPose(Axis.XP.rotationDegrees(-pitch));
+        // Same substitution as the other airframes: our texture and the real buffer, whatever fixed
+        // source fire control's far-plane branch hands over.
+        MultiBufferSource target = MissileVisualSupport.bufferFor(entity, buffer, TextureAtlas.LOCATION_BLOCKS);
         this.itemRenderer.renderStatic(entity.getItem(), ItemDisplayContext.NONE, packedLight,
-                OverlayTexture.NO_OVERLAY, poseStack, buffer, entity.level(), entity.getId());
+                OverlayTexture.NO_OVERLAY, poseStack, target, entity.level(), entity.getId());
         poseStack.popPose();
         super.render(entity, entityYaw, partialTicks, poseStack, buffer, packedLight);
     }

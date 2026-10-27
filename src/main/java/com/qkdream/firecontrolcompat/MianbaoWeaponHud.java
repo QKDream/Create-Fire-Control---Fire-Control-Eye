@@ -98,6 +98,7 @@ public final class MianbaoWeaponHud {
         register(MianbaosModernwarfareModBlockEntities.OPTICALGUIDEDMISSILERACK, true);
         register(MianbaosModernwarfareModBlockEntities.ANTIRADIATIONMISSILERACK, true);
         register(MianbaosModernwarfareModBlockEntities.CRUISEMISSILERACK, true);
+        register(MianbaosModernwarfareModBlockEntities.CRUISEMISSILELOWRACK, true);
         register(MianbaosModernwarfareModBlockEntities.NUCLEARCRUISEMISSILERACK, true);
         register(MianbaosModernwarfareModBlockEntities.JDAM_1RACK, true);
         register(MianbaosModernwarfareModBlockEntities.JDAM_2RACK, true);

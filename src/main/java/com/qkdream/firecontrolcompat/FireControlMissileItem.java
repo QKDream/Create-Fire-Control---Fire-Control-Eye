@@ -12,7 +12,7 @@ import net.minecraft.world.item.TooltipFlag;
  * Missile item that renders the {@code description_N} lang entries of its
  * registry key as gray tooltip lines, keeping every description translatable.
  */
-public final class FireControlMissileItem extends Item {
+public class FireControlMissileItem extends Item {
 
     private final String descriptionPrefix;
 

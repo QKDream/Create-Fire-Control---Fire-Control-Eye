@@ -5,77 +5,100 @@ import com.hooya.stabilizedturret.client.ClientRadarState;
 import com.hooya.stabilizedturret.client.ClientTelevisionGuidanceState;
 import com.hooya.stabilizedturret.client.RadarHudRenderer;
 import com.hooya.stabilizedturret.mixin.client.GameRendererAccessor;
+import com.qkdream.firecontrolcompat.FireControlCompat;
 import com.qkdream.firecontrolcompat.client.LeadArrowRenderer;
 import java.util.List;
 import java.util.UUID;
 import net.minecraft.client.Camera;
-import net.minecraft.client.CameraType;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.util.Mth;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.RenderGuiEvent;
 import org.joml.Vector3f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
-import org.spongepowered.asm.mixin.gen.Invoker;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * TWS (track-while-scan) presentation for the aircraft radar world HUD, plus
- * a lead-direction arrow at the centre of the ground radar lock frame.
+ * The radar HUD overlay, reduced to the one thing fire control does not draw itself.
  *
- * <p>Vanilla {@code renderWorldFrames} only draws a single corner frame in
- * aircraft mode: the selected/locked/reticle-nearest contact, and when that
- * contact disappears no frames are drawn at all. This mixin keeps a corner
- * frame on every visible contact after the vanilla pass and wraps the
- * actively boxed contact in a connected square with the same centre and
- * half-size as its corner frame, so locking a target never hides the other
- * tracks and the lock ring sits exactly on the existing frame.
+ * <h2>What was removed, and why (2026-10-26, task 4)</h2>
  *
- * <p>For the ground radar the locked contact already keeps its connected
- * square; this mixin additionally draws the lead indicator at the square's
- * centre unless the optical lock owns the indicator already, so the gunner
- * can read the required lead.
+ * <p>This mixin used to draw the whole track-while-scan picture: a four-corner bracket on every
+ * contact, a closed square plus selection bars on the locked one, and a dot on a distant one. It was
+ * written on the belief that fire control's own {@code renderWorldFrames} was unreachable in first
+ * person - which was true for the pass <b>that</b> version of the mod called, but the pack has its
+ * own drawing for exactly these contacts:</p>
+ *
+ * <pre>RadarHudRenderer#renderWorldFrames (:635-682, 0.9.4)
+ *   else branch (ground radar):
+ *     for each ClientRadarState.Contact
+ *       locked  -&gt; CannonLeadHud.render + TargetLockFrame.render(.., Style.GROUND_RADAR, amber)
+ *       other   -&gt; TargetLockFrame.renderRadarContact(.., -798041913)</pre>
+ *
+ * <p>so in third person or through the scope the gunner saw two frames on one track: the pack's and
+ * ours, at slightly different sizes. The report is the user's own words - the lock frame overlaps.</p>
+ *
+ * <p>Ours is therefore gone. The pack's is the only frame, which also means the <b>contact list</b>
+ * it draws from is the only source: a mathematical round is a {@code RadarContact} on the server
+ * (this mod appends it, see {@code CompatScanner#appendMathRadarContacts}), it travels to the client
+ * in the pack's own payload and lands in {@code ClientRadarState.getContacts()} like any other
+ * track - so the pack's drawer frames it with no help from here. Nothing has to be re-fed.</p>
+ *
+ * <h2>What is kept</h2>
+ *
+ * <p>The lead arrow. It is this mod's own designation aid ({@link LeadArrowRenderer}, driven by
+ * {@code stabilizedContactVelocity}) and the pack's {@code CannonLeadHud} is drawn only inside
+ * {@code renderWorldFrames} - i.e. never in the unscoped <b>first person</b> camera, which is how a
+ * gunner sits at a computer. So the arrow is drawn exactly where the pack draws nothing, and
+ * suppressed where the pack's own lead marker is on screen. That is the whole rule:
+ * <b>one picture, from whichever side has one.</b></p>
+ *
+ * <p>Every frame says which side drew: {@code radar tws: ours=off pack=&lt;on|off&gt; contacts=..}.</p>
+ *
+ * <p>The removed drawing is preserved verbatim in
+ * {@code _bak_src/task4_tws_20261026_223328/FireControlCompatRadarTwsMixin.java} - restoring it is
+ * copying that file back and rebuilding.</p>
  */
 @Mixin(RadarHudRenderer.class)
 public abstract class FireControlCompatRadarTwsMixin {
 
-    @Invoker("selectedAircraftContact")
-    private static ClientRadarState.Contact firecontrolcompat$invokeSelectedAircraftContact(
-            Minecraft minecraft, float partialTicks) {
-        throw new AbstractMethodError();
-    }
-
-    @Invoker("drawCornerSquare")
-    private static void firecontrolcompat$invokeDrawCornerSquare(GuiGraphics graphics, int x, int y, int half) {
-        throw new AbstractMethodError();
-    }
-
-    @Invoker("drawConnectedSquare")
-    private static void firecontrolcompat$invokeDrawConnectedSquare(GuiGraphics graphics, int x, int y, int half) {
-        throw new AbstractMethodError();
-    }
-
-    @Invoker("renderWorldFrames")
-    private static void firecontrolcompat$invokeRenderWorldFrames(
-            GuiGraphics graphics, Minecraft minecraft, float partialTicks) {
-        throw new AbstractMethodError();
+    @Inject(method = "render", at = @At("RETURN"), require = 0)
+    private static void firecontrolcompat$twsOverlay(RenderGuiEvent.Post event, CallbackInfo ci) {
+        try {
+            firecontrolcompat$drawTws(event);
+        } catch (Throwable failure) {
+            firecontrolcompat$reportTws(0, 0, false, "exception:" + failure);
+        }
     }
 
     /**
-     * Vanilla only calls {@code renderWorldFrames} when the aircraft radar is
-     * active, the player is scoped in or the camera is not first person. That
-     * means the ground radar TWS frames disappear as soon as the player leaves
-     * the scope. When the radar HUD is otherwise active but vanilla skips the
-     * world frames, draw them anyway so the tracks stay visible.
+     * Whether fire control is drawing the radar frames this frame.
+     *
+     * <p>Mirrors the condition in {@code RadarHudRenderer#render} :54 exactly - aircraft radar, a
+     * scoped sight, or any camera but the first-person one. Inside that condition the pack draws
+     * every contact and the lock; outside it draws nothing at all.</p>
      */
-    @Inject(method = "render", at = @At("RETURN"))
-    private static void firecontrolcompat$worldFramesOutsideScope(
-            RenderGuiEvent.Post event, CallbackInfo ci) {
+    @Unique
+    private static boolean firecontrolcompat$packDrawsFrames(Minecraft minecraft) {
+        try {
+            return ClientRadarState.isAircraftMode()
+                    || ClientAimState.isScoped()
+                    || minecraft.options.getCameraType() != net.minecraft.client.CameraType.FIRST_PERSON;
+        } catch (Throwable ignored) {
+            // Unreadable state: assume the pack is drawing, because a missing frame is recoverable
+            // with a camera change and a duplicate frame is the defect being fixed.
+            return true;
+        }
+    }
+
+    /**
+     * Draws the lead arrow when - and only when - fire control is not drawing its own.
+     */
+    @Unique
+    private static void firecontrolcompat$drawTws(RenderGuiEvent.Post event) {
         Minecraft minecraft = Minecraft.getInstance();
         if (!ClientRadarState.isActive()
                 || ClientAimState.isPodView()
@@ -84,92 +107,119 @@ public abstract class FireControlCompatRadarTwsMixin {
                 || minecraft.screen != null) {
             return;
         }
-        if (ClientRadarState.isAircraftMode()
-                || ClientAimState.isScoped()
-                || minecraft.options.getCameraType() != CameraType.FIRST_PERSON) {
-            return;
-        }
-        firecontrolcompat$invokeRenderWorldFrames(
-                event.getGuiGraphics(), minecraft, event.getPartialTick().getGameTimeDeltaTicks());
-    }
-
-    @Inject(method = "renderWorldFrames", at = @At("RETURN"))
-    private static void firecontrolcompat$twsWorldFrames(
-            GuiGraphics graphics, Minecraft minecraft, float partialTicks, CallbackInfo ci) {
-        if (ClientRadarState.isAircraftMode()) {
-            firecontrolcompat$aircraftFrames(graphics, minecraft, partialTicks);
-        } else {
-            firecontrolcompat$groundLeadArrow(graphics, minecraft, partialTicks);
-        }
-    }
-
-    @Unique
-    private static void firecontrolcompat$aircraftFrames(
-            GuiGraphics graphics, Minecraft minecraft, float partialTicks) {
-        ClientRadarState.Contact boxed = firecontrolcompat$invokeSelectedAircraftContact(minecraft, partialTicks);
-        int width = graphics.guiWidth();
-        int height = graphics.guiHeight();
         List<ClientRadarState.Contact> contacts = ClientRadarState.getContacts();
         if (contacts == null) {
+            firecontrolcompat$reportTws(0, 0, false, "no-contact-table");
             return;
         }
-        for (ClientRadarState.Contact contact : contacts) {
-            int[] point = firecontrolcompat$project(minecraft, contact.center(), width, height, partialTicks);
-            if (point == null) {
-                continue;
-            }
-            AABB bounds = contact.bounds();
-            int[] size = bounds == null ? null : firecontrolcompat$projectBounds(minecraft, bounds, height, partialTicks);
-            if (size == null) {
-                continue;
-            }
-            int half = Mth.clamp((Math.max(size[0], size[1]) + 1) / 2 + 2, 7, 220);
-            if (boxed != null && contact.id().equals(boxed.id())) {
-                firecontrolcompat$invokeDrawConnectedSquare(graphics, point[0], point[1], half);
-            } else {
-                firecontrolcompat$invokeDrawCornerSquare(graphics, point[0], point[1], half);
-            }
-        }
-    }
-
-    @Unique
-    private static void firecontrolcompat$groundLeadArrow(
-            GuiGraphics graphics, Minecraft minecraft, float partialTicks) {
-        if (ClientAimState.isOpticalLockActive()) {
+        boolean packFrames = firecontrolcompat$packDrawsFrames(minecraft);
+        if (packFrames) {
+            // The pack's TargetLockFrame / CannonLeadHud own the picture; ours would be a duplicate
+            // drawn a few pixels off, which is the overlap this round removed.
+            firecontrolcompat$reportTws(contacts.size(), 0, true, "pack-owns-frames");
             return;
         }
+        GuiGraphics graphics = event.getGuiGraphics();
+        float partialTick = event.getPartialTick().getGameTimeDeltaPartialTick(true);
         UUID locked = ClientRadarState.getLockedTarget();
         if (locked == null) {
+            firecontrolcompat$reportTws(contacts.size(), 0, false, "pack-off-no-lock");
             return;
         }
-        List<ClientRadarState.Contact> contacts = ClientRadarState.getContacts();
-        if (contacts == null) {
-            return;
-        }
-        ClientRadarState.Contact lockedContact = null;
+        int arrows = 0;
         for (ClientRadarState.Contact contact : contacts) {
-            if (contact.id().equals(locked)) {
-                lockedContact = contact;
-                break;
+            if (contact == null || !locked.equals(contact.id())) {
+                continue;
             }
+            if (firecontrolcompat$groundLeadArrow(graphics, minecraft, partialTick, contact)) {
+                arrows++;
+            }
+            break;
         }
-        if (lockedContact == null) {
-            return;
+        firecontrolcompat$reportTws(contacts.size(), arrows, false,
+                arrows > 0 ? "lead-arrow" : "pack-off-no-velocity");
+    }
+
+    /**
+     * One line per change, at most one every {@link #TWS_LOG_TICKS} ticks.
+     *
+     * <p>The stamp is tested against {@code 0} directly and never subtracted from
+     * {@code Long.MIN_VALUE}: that comparison wraps and silences the line for every positive game
+     * time, which is how three earlier "no contacts" reports went unread.</p>
+     *
+     * <pre>radar tws: ours=off pack=&lt;on|off&gt; contacts=&lt;n&gt; arrows=&lt;n&gt; reason=&lt;..&gt;</pre>
+     */
+    @Unique
+    private static void firecontrolcompat$reportTws(
+            int contacts, int arrows, boolean packFrames, String reason) {
+        try {
+            Minecraft minecraft = Minecraft.getInstance();
+            long now = minecraft.level == null ? 0L : minecraft.level.getGameTime();
+            boolean pack = packFrames || "pack-owns-frames".equals(reason);
+            if (contacts == firecontrolcompat$lastContacts && arrows == firecontrolcompat$lastArrows
+                    && pack == firecontrolcompat$lastPack
+                    && reason.equals(firecontrolcompat$lastReason)
+                    && firecontrolcompat$twsLogAt != 0L && now - firecontrolcompat$twsLogAt < TWS_LOG_TICKS) {
+                return;
+            }
+            firecontrolcompat$twsLogAt = now;
+            firecontrolcompat$lastContacts = contacts;
+            firecontrolcompat$lastArrows = arrows;
+            firecontrolcompat$lastPack = pack;
+            firecontrolcompat$lastReason = reason;
+            FireControlCompat.LOGGER.info(
+                    "radar tws: ours=off pack={} contacts={} arrows={} reason={}",
+                    pack ? "on" : "off", contacts, arrows, reason);
+        } catch (Throwable ignored) {
+            // Reporting must never take the HUD down.
+        }
+    }
+
+    @Unique
+    private static final int TWS_LOG_TICKS = 40;
+
+    @Unique
+    private static long firecontrolcompat$twsLogAt;
+
+    @Unique
+    private static int firecontrolcompat$lastContacts = -1;
+
+    @Unique
+    private static int firecontrolcompat$lastArrows = -1;
+
+    @Unique
+    private static boolean firecontrolcompat$lastPack;
+
+    @Unique
+    private static String firecontrolcompat$lastReason = "";
+
+    /**
+     * The lead arrow at the locked contact, if it has a velocity worth leading.
+     *
+     * @return whether an arrow was actually drawn
+     */
+    @Unique
+    private static boolean firecontrolcompat$groundLeadArrow(
+            GuiGraphics graphics, Minecraft minecraft, float partialTick,
+            ClientRadarState.Contact lockedContact) {
+        if (ClientAimState.isOpticalLockActive()) {
+            return false;
         }
         int[] origin = firecontrolcompat$project(
-                minecraft, lockedContact.center(), graphics.guiWidth(), graphics.guiHeight(), partialTicks);
+                minecraft, lockedContact.center(), graphics.guiWidth(), graphics.guiHeight(), partialTick);
         if (origin == null) {
-            return;
+            return false;
         }
         Vec3 leadVelocity =
                 LeadArrowRenderer.stabilizedContactVelocity(
                         lockedContact.id(), lockedContact.velocity());
         if (leadVelocity == null) {
-            return;
+            return false;
         }
         LeadArrowRenderer.draw(
-                graphics, origin[0], origin[1], minecraft, partialTicks,
+                graphics, origin[0], origin[1], minecraft, partialTick,
                 lockedContact.center(), leadVelocity);
+        return true;
     }
 
     @Unique
@@ -187,54 +237,18 @@ public abstract class FireControlCompatRadarTwsMixin {
         if (forward <= 0.05D) {
             return null;
         }
-        double fov = ((GameRendererAccessor) minecraft.gameRenderer).stabilizedTurret$getFov(camera, partialTicks, true);
-        double scale = (height * 0.5D) / Math.tan(0.01745329238474369D * fov * 0.5D);
+        double scale = firecontrolcompat$pixelScale(minecraft, camera, height, partialTicks);
         int x = width / 2 + (int) Math.round(-offset.dot(leftVector) * scale / forward);
         int y = height / 2 + (int) Math.round(-offset.dot(upVector) * scale / forward);
         return new int[] {x, y};
     }
 
+    /** Pixels per unit at one block of depth, from the field of view the pack draws with. */
     @Unique
-    private static int[] firecontrolcompat$projectBounds(
-            Minecraft minecraft, AABB bounds, int height, float partialTicks) {
-        Camera camera = minecraft.gameRenderer.getMainCamera();
-        Vector3f look = camera.getLookVector();
-        Vector3f left = camera.getLeftVector();
-        Vector3f up = camera.getUpVector();
-        Vec3 lookVector = new Vec3(look.x, look.y, look.z);
-        Vec3 leftVector = new Vec3(left.x, left.y, left.z);
-        Vec3 upVector = new Vec3(up.x, up.y, up.z);
-        double fov = ((GameRendererAccessor) minecraft.gameRenderer).stabilizedTurret$getFov(camera, partialTicks, true);
-        double scale = (height * 0.5D) / Math.tan(0.01745329238474369D * fov * 0.5D);
-        double minX = Double.POSITIVE_INFINITY;
-        double minY = Double.POSITIVE_INFINITY;
-        double maxX = Double.NEGATIVE_INFINITY;
-        double maxY = Double.NEGATIVE_INFINITY;
-        int count = 0;
-        double[] xs = {bounds.minX, bounds.maxX};
-        double[] ys = {bounds.minY, bounds.maxY};
-        double[] zs = {bounds.minZ, bounds.maxZ};
-        for (double cornerX : xs) {
-            for (double cornerY : ys) {
-                for (double cornerZ : zs) {
-                    Vec3 offset = new Vec3(cornerX, cornerY, cornerZ).subtract(camera.getPosition());
-                    double forward = offset.dot(lookVector);
-                    if (forward <= 0.05D) {
-                        continue;
-                    }
-                    double sx = -offset.dot(leftVector) * scale / forward;
-                    double sy = -offset.dot(upVector) * scale / forward;
-                    minX = Math.min(minX, sx);
-                    maxX = Math.max(maxX, sx);
-                    minY = Math.min(minY, sy);
-                    maxY = Math.max(maxY, sy);
-                    count++;
-                }
-            }
-        }
-        if (count == 0) {
-            return null;
-        }
-        return new int[] {(int) Math.ceil(maxX - minX), (int) Math.ceil(maxY - minY)};
+    private static double firecontrolcompat$pixelScale(
+            Minecraft minecraft, Camera camera, int height, float partialTicks) {
+        double fov = ((GameRendererAccessor) minecraft.gameRenderer)
+                .stabilizedTurret$getFov(camera, partialTicks, true);
+        return (height * 0.5D) / Math.tan(Math.toRadians(fov) * 0.5D);
     }
 }

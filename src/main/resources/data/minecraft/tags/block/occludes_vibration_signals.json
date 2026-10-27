@@ -1,0 +1,17 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "firecontrolcompat:silencer_board",
+      "required": false
+    },
+    {
+      "id": "firecontrolcompat:silencer_layer",
+      "required": false
+    },
+    {
+      "id": "firecontrolcompat:silencer_half_layer",
+      "required": false
+    }
+  ]
+}

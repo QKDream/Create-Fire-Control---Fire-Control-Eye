@@ -39,7 +39,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * 面包学's cruise missiles on the aircraft weapon rack, the standard round and
+ * 闈㈠寘瀛?s cruise missiles on the aircraft weapon rack, the standard round and
  * the low-altitude one alike, flown by the fire control computer.
  *
  * <p>The fire control keeps aircraft weapons as one of its own types, and there
@@ -60,7 +60,7 @@ import net.minecraft.world.phys.Vec3;
  */
 public final class CruiseMissileRackCompat {
 
-    /** The rail 面包学 hangs its cruise missile on. */
+    /** The rail 闈㈠寘瀛?hangs its cruise missile on. */
     private static final ResourceLocation CRUISE_RACK =
             ResourceLocation.fromNamespaceAndPath("mianbaos_modernwarfare", "cruisemissilerack");
     /** The rail that throws the low-altitude round of the same family. */
@@ -168,7 +168,7 @@ public final class CruiseMissileRackCompat {
     /**
      * Lifts a round that came out of its rail already touching the ground.
      *
-     * <p>面包学's cruise missile discards itself on the first tick its "stuck" flag is set, so
+     * <p>闈㈠寘瀛?s cruise missile discards itself on the first tick its "stuck" flag is set, so
      * a round that leaves the rail inside the ground or the aircraft is gone before it is seen -
      * which is exactly "it vanishes the instant it leaves the rack". The flag is cleared and the
      * round lifted clear, so it gets the flight its rail meant it to have.</p>
@@ -201,7 +201,7 @@ public final class CruiseMissileRackCompat {
         }
     }
 
-    /** Whether the block is one of 面包学's cruise missile rails. */
+    /** Whether the block is one of 闈㈠寘瀛?s cruise missile rails. */
     public static boolean isCruiseRack(BlockState state) {
         if (state == null) {
             return false;
@@ -210,7 +210,7 @@ public final class CruiseMissileRackCompat {
         return CRUISE_RACK.equals(id) || CRUISE_LOW_RACK.equals(id);
     }
 
-    /** Whether the block in that binding is 面包学's cruise missile rail. */
+    /** Whether the block in that binding is 闈㈠寘瀛?s cruise missile rail. */
     public static boolean isCruiseRack(Level level, BindingRef ref) {
         BlockEntity blockEntity = ref == null || level == null ? null : ref.resolve(level);
         return blockEntity != null && isCruiseRack(blockEntity.getBlockState());
@@ -221,7 +221,7 @@ public final class CruiseMissileRackCompat {
         return id != null && MianbaoAircraftCompat.isRack(BuiltInRegistries.BLOCK.get(id).defaultBlockState());
     }
 
-    /** Whether the entity is one of 面包学's cruise missiles. */
+    /** Whether the entity is one of 闈㈠寘瀛?s cruise missiles. */
     public static boolean isCruiseMissile(Entity entity) {
         if (entity == null) {
             return false;
@@ -241,7 +241,7 @@ public final class CruiseMissileRackCompat {
      * of it.
      *
      * <p>The rail's own launch copies the aim off the block it stood on, so the
-     * round flies 面包学's own route - the boost, the climb onto its cruise
+     * round flies 闈㈠寘瀛?s own route - the boost, the climb onto its cruise
      * altitude and its own run-in - only at the target the computer picked, and
      * leaves the rail only when the block is told what that target is. A rail
      * whose computer holds no ground target is told so as well, and the round
@@ -254,7 +254,7 @@ public final class CruiseMissileRackCompat {
         BlockState state = server.getBlockState(pos);
         // Aimed exactly the way a bomb rack is: the glide bombs receive their point through
         // that writer and lock correctly from it, so this rail uses it too.
-        // A/B switch: with this off the rail is launched exactly as 面包学 launches it, with no
+        // A/B switch: with this off the rail is launched exactly as 闈㈠寘瀛?launches it, with no
         // aim written at all. If the round still vanishes the instant it leaves the rail, then
         // the aim was never the cause and the launch itself is; if it flies, the aim is what
         // turned it into the rail and destroyed it, and the aim will be written after the round
@@ -262,25 +262,47 @@ public final class CruiseMissileRackCompat {
         if (WRITE_AIM) {
             aimTheRail(server, pos);
         }
-        if (isLowRack(state)) {
-            CruisemissilelowgoProcedure.execute(server, pos.getX(), pos.getY(), pos.getZ());
-        } else {
-            CruisemissilegoProcedure.execute(server, pos.getX(), pos.getY(), pos.getZ());
-        }
+        // The aim and the rail are filed <b>before</b> the rail's own procedure runs, because that
+        // procedure spawns the round inside itself: entity-join fires while it is still on the
+        // stack, so a file written afterwards is a file the round never saw. That ordering is what
+        // the session log of 2026-10-25 15:22 caught red handed -
+        // {@code cruise round caught via stray} (no rail), no {@code cruise aim bound} line, and no
+        // {@code cruise-lock} line for the whole flight: the round was claimed with no aim at all,
+        // so the speed pass had nothing to steer at and the live lock had nothing to refresh.
         Vec3 aim = WRITE_AIM ? BombRackCompat.groundPointOf(server, pos) : null;
         if (aim != null) {
             LAST_AIM.put(pos.hashCode(), aim);
             FireControlCompat.LOGGER.info("[firecontrolcompat] cruise aim filed rail={} point={}", pos, aim);
         }
-        boolean caught = rememberLaunchedRound(server, pos);
-        if (!caught) {
-            synchronized (PENDING) {
-                PENDING.add(new Pending(server, pos.immutable(), server.getGameTime() + PICKUP_TICKS));
-            }
+        LAST_RAIL = pos.immutable();
+        LAST_RAIL_TICK = server.getGameTime();
+        synchronized (PENDING) {
+            PENDING.add(new Pending(server, pos.immutable(), server.getGameTime() + PICKUP_TICKS));
         }
+        boolean caught;
+        if (isLowRack(state)) {
+            CruisemissilelowgoProcedure.execute(server, pos.getX(), pos.getY(), pos.getZ());
+        } else {
+            CruisemissilegoProcedure.execute(server, pos.getX(), pos.getY(), pos.getZ());
+        }
+        caught = rememberLaunchedRound(server, pos);
         FireControlCompat.LOGGER.info("[firecontrolcompat] cruise rail fired rail={} round={}",
                 pos, caught ? "caught" : "waiting");
         return true;
+    }
+
+    /** The rail that fired last, and when, for a round claimed a beat after its rail. */
+    private static volatile BlockPos LAST_RAIL;
+
+    private static volatile long LAST_RAIL_TICK;
+
+    /** The rail a stray round came off, if a rail fired within the pickup window. */
+    private static BlockPos recentRail(Level level) {
+        BlockPos rail = LAST_RAIL;
+        if (rail == null || level == null) {
+            return null;
+        }
+        return level.getGameTime() - LAST_RAIL_TICK <= PICKUP_TICKS ? rail : null;
     }
 
     /**
@@ -376,7 +398,7 @@ public final class CruiseMissileRackCompat {
      * Writes the computer's ground target onto the rail, which is where the rail's own launch
      * reads it. This is the arrangement that locked correctly before this mod's selection work,
      * and it is restored untouched: the point is the computer's own air-to-ground target, in
-     * world space, written under the keys 面包学's launch reads.
+     * world space, written under the keys 闈㈠寘瀛?s launch reads.
      */
     private static void aimTheRail(ServerLevel level, BlockPos pos) {
         BlockEntity blockEntity = level.getBlockEntity(pos);
@@ -385,7 +407,7 @@ public final class CruiseMissileRackCompat {
         }
         Vec3 aim = aimedTarget(level, pos);
         CompoundTag data = blockEntity.getPersistentData();
-        data.putBoolean("坐标模式", aim != null);
+        data.putBoolean("鍧愭爣妯″紡", aim != null);
         if (aim != null) {
             data.putDouble("target_x", aim.x);
             data.putDouble("target_y", aim.y);
@@ -446,7 +468,7 @@ public final class CruiseMissileRackCompat {
 
     /**
      * Whether the air-to-ground slot of a computer is the cruise rail rather
-     * than a plain air-to-ground one: the selection reads 巡航导弹 then, and
+     * than a plain air-to-ground one: the selection reads 宸¤埅瀵煎脊 then, and
      * the air-to-ground name while a normal rail is bound beside it.
      */
     public static boolean namesAirToGroundSlot(Level level, List<BindingRef> racks) {
@@ -479,7 +501,12 @@ public final class CruiseMissileRackCompat {
         if (nearest == null) {
             return false;
         }
-        return claim(nearest, "rail");
+        boolean claimed = claim(nearest, "rail");
+        if (claimed) {
+            // Remembered so the lock can be re-read every tick while she flies (see refreshLock).
+            RAIL.put(nearest.getUUID(), pos.immutable());
+        }
+        return claimed;
     }
 
     /**
@@ -499,23 +526,42 @@ public final class CruiseMissileRackCompat {
         }
         Vec3 at = entity.position();
         boolean matched = false;
+        BlockPos fromRail = null;
         synchronized (PENDING) {
             for (Pending pending : PENDING) {
                 if (pending.claimed) {
                     continue;
                 }
-                Vec3 muzzle = Vec3.atCenterOf(pending.pos).add(0.0D, -MUZZLE_DROP, 0.0D);
+                // Compared in <b>world</b> space: a rail on a structure stands at its plot's
+                // coordinate (tens of millions of blocks away) while the round is thrown at the
+                // place the structure is drawn, so a comparison of the two raw positions could
+                // never match - which is why every launch used to be taken as a stray.
+                Vec3 muzzle = SubLevelPositions
+                        .worldPosition(pending.level, Vec3.atCenterOf(pending.pos))
+                        .add(0.0D, -MUZZLE_DROP, 0.0D);
                 if (at.distanceToSqr(muzzle) <= CLAIM_SEARCH * CLAIM_SEARCH) {
                     pending.claimed = true;
                     matched = true;
+                    fromRail = pending.pos;
                     break;
                 }
             }
         }
         if (matched) {
             claim(entity, "rail-spawn", newestAim());
+            if (fromRail != null) {
+                // The rail she came off, so her lock is re-read every tick she flies.
+                RAIL.put(entity.getUUID(), fromRail);
+            }
         } else if (!entity.getPersistentData().getBoolean(CRUISE_GUIDED_KEY)) {
             claim(entity, "stray", newestAim());
+            // A rail that fired a moment ago is still the rail this round came off, even when the
+            // spawn test could not match it. Binding her to it is what lets her lock be refreshed
+            // for the rest of the flight.
+            BlockPos rail = recentRail(entity.level());
+            if (rail != null) {
+                RAIL.put(entity.getUUID(), rail);
+            }
         }
     }
 
@@ -579,7 +625,7 @@ public final class CruiseMissileRackCompat {
      * her own cruise mark, so the round, her motor and the trail behind her run
      * unbroken from the rail all the way to the target. It is the same mark fire
      * control puts on the cruise missiles it throws itself, so nothing else
-     * about the round changes: she is still 面包学's own flight, at 面包学's own
+     * about the round changes: she is still 闈㈠寘瀛?s own flight, at 闈㈠寘瀛?s own
      * speed.</p>
      */
     private static void markTakenOver(Entity missile) {
@@ -619,9 +665,99 @@ public final class CruiseMissileRackCompat {
                 if (isLowCruiseMissile(missile)) {
                     MianbaoMissileRemoteSync.broadcast(missile);
                 }
+                refreshLock(missile);
                 holdSpeed(missile);
             }
         }
+    }
+
+    /** The rail each round of ours came off, by round id, so its lock can be re-read every tick. */
+    private static final Map<UUID, BlockPos> RAIL = new ConcurrentHashMap<>();
+
+    /** The point every round of ours was last told to fly to, so only a change is printed. */
+    private static final Map<UUID, Vec3> LAST_LOCK = new ConcurrentHashMap<>();
+
+    /** Rounds that have reached their point: their aim is not re-created any more. */
+    private static final Set<UUID> ARRIVED = ConcurrentHashMap.newKeySet();
+
+    /** One line a second at most, however many rounds are in the air. */
+    private static long lastLockLog;
+
+    /**
+     * Re-reads the computer's lock for a round already in the air.
+     *
+     * <h2>Why this exists</h2>
+     *
+     * <p>The aim was bound once, at the moment the round was claimed: {@code claim} takes
+     * {@code newestAim()} - a snapshot of whatever the computer held at launch - and
+     * {@code holdSpeed} steered at that one point for the whole flight. A crew that re-locked a
+     * different target after the launch watched the round fly on to the old one, which is exactly
+     * "the lock does not take". 闈㈠寘瀛?s own air-to-ground rounds re-read the computer's target every
+     * tick; this does the same for a round of ours, through the pack's own accessor, so the strike
+     * point and a pod lock are both honoured and the pod keeps its precedence (this mod's
+     * {@code getAirToGroundTargetSnapshot} hook already answers in that order).</p>
+     *
+     * <p>Only the length of the velocity is this mod's business elsewhere; the direction is turned
+     * towards the live point by {@link #holdSpeed}, so a target that moves is flown to.</p>
+     */
+    private static void refreshLock(Entity missile) {
+        try {
+            UUID id = missile.getUUID();
+            // A round that has arrived has already had its aim dropped; re-creating it here would
+            // make her turn round and circle the impact point instead of going off.
+            if (ARRIVED.contains(id)) {
+                return;
+            }
+            BlockPos rail = RAIL.get(id);
+            if (rail == null) {
+                return;
+            }
+            ServerLevel root = MianbaoMissileCompat.getRootServerLevel(missile);
+            if (root == null) {
+                return;
+            }
+            StabilizerControllerBlockEntity controller = controllerForRail(root, rail);
+            if (controller == null || controller.isRemoved()) {
+                return;
+            }
+            StabilizerControllerBlockEntity.GroundTargetSnapshot snapshot =
+                    controller.getAirToGroundTargetSnapshot();
+            if (snapshot == null || snapshot.center() == null) {
+                return;
+            }
+            Vec3 live = snapshot.center();
+            Vec3 was = LAST_LOCK.put(id, live);
+            if (was != null && was.distanceToSqr(live) < 0.25D) {
+                return;
+            }
+            AIM.put(id, live);
+            long now = System.currentTimeMillis();
+            if (now - lastLockLog < 1000L) {
+                return;
+            }
+            lastLockLog = now;
+            FireControlCompat.LOGGER.info(
+                    "[firecontrolcompat] cruise-lock: target={} point={} updatedTick={}",
+                    snapshot.id(), live, root.getGameTime());
+        } catch (Throwable ignored) {
+            // the pack's own flight is never worth a crash
+        }
+    }
+
+    /** The computer that holds this rail, found the way the launch aim finds it. */
+    private static StabilizerControllerBlockEntity controllerForRail(ServerLevel level, BlockPos pos) {
+        BlockEntity rail = level.getBlockEntity(pos);
+        for (StabilizerControllerBlockEntity controller : ControllerTracker.loadedControllers()) {
+            if (controller == null || controller.getLevel() == null) {
+                continue;
+            }
+            for (BindingRef rack : controller.getAircraftMissileRacks()) {
+                if (rack.resolve(controller.getLevel()) == rail || rack.matches(level, pos)) {
+                    return controller;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -659,6 +795,9 @@ public final class CruiseMissileRackCompat {
             Vec3 to = aim.subtract(missile.position());
             if (to.lengthSqr() < 16.0D) {
                 AIM.remove(missile.getUUID());
+                // Marked so the per-tick lock refresh cannot hand her the same point again and
+                // turn her into a round that circles its own impact point.
+                ARRIVED.add(missile.getUUID());
             } else {
                 Vec3 desired = to.normalize().scale(CRUISE_SPEED);
                 Vec3 base = speed < 0.05D ? desired : velocity;
@@ -750,6 +889,12 @@ public final class CruiseMissileRackCompat {
             return;
         }
         release(PATHS.remove(missile.getUUID()));
+        // A round that is gone has no lock to refresh any more: all three maps are per round, and
+        // leaving the entries behind would grow them for the life of the server.
+        RAIL.remove(missile.getUUID());
+        LAST_LOCK.remove(missile.getUUID());
+        AIM.remove(missile.getUUID());
+        ARRIVED.remove(missile.getUUID());
     }
 
     private static void release(Path path) {

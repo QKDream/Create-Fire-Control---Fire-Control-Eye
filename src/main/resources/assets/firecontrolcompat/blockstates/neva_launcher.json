@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "firecontrolcompat:block/neva_launcher"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "replace": false,
+  "values": [
+    "firecontrolcompat:sap_mediumshell",
+    "firecontrolcompat:traffic_cone_mediumshell",
+    "firecontrolcompat:acoustic_torpedo"
+  ]
+}

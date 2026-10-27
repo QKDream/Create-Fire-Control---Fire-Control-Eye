@@ -1,0 +1,24 @@
+package com.qkdream.firecontrolcompat.compat.cbcbigcannon;
+
+import java.util.List;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.item.Item.TooltipContext;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.TooltipFlag;
+import net.minecraft.world.level.block.Block;
+import rbasamoyai.createbigcannons.munitions.FuzedProjectileBlockItem;
+
+/** The EMP shell item: CBC's fuzed shell item plus a line on what the burst does. */
+public class EmpShellItem extends FuzedProjectileBlockItem {
+
+    public EmpShellItem(Block block, Properties properties) {
+        super(block, properties);
+    }
+
+    @Override
+    public void appendHoverText(ItemStack stack, TooltipContext context, List<Component> tooltip, TooltipFlag flag) {
+        super.appendHoverText(stack, context, tooltip, flag);
+        tooltip.add(Component.translatable("item.firecontrolcompat.emp_shell.desc").withStyle(ChatFormatting.GRAY));
+    }
+}

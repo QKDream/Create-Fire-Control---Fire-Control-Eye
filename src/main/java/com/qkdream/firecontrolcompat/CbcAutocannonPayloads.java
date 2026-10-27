@@ -117,6 +117,7 @@ public final class CbcAutocannonPayloads {
         projectile.yRotO = yRot;
         projectile.xRotO = xRot;
         level.addFreshEntity(projectile);
+        SonicPulse.gunfireOnce(level, position, projectile.getUUID());
 
         ProjectileHandle<?> marker = ShaolibProjectiles.spawn(level, markerType(), position, Vec3.ZERO);
         if (marker == null) {
@@ -124,6 +125,11 @@ public final class CbcAutocannonPayloads {
             return Optional.empty();
         }
         return Optional.of(marker);
+    }
+
+    /** The id of the bookkeeping marker, so a listener can tell it from a shot. */
+    public static ResourceLocation markerId() {
+        return MARKER_ID;
     }
 
     /**

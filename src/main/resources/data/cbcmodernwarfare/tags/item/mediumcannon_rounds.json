@@ -1,0 +1,9 @@
+{
+  "replace": false,
+  "values": [
+    "firecontrolcompat:sap_mediumcannon_round",
+    "firecontrolcompat:traffic_cone_mediumcannon_round",
+    "firecontrolcompat:atgm_mediumcannon_round",
+    "firecontrolcompat:sfm_mediumcannon_round"
+  ]
+}

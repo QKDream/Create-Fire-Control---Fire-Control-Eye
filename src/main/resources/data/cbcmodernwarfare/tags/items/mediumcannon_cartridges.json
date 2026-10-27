@@ -1,0 +1,9 @@
+{
+  "replace": false,
+  "values": [
+    "firecontrolcompat:sap_mediumcannon_cartridge",
+    "firecontrolcompat:traffic_cone_mediumcannon_cartridge",
+    "firecontrolcompat:atgm_mediumcannon_cartridge",
+    "firecontrolcompat:sfm_mediumcannon_cartridge"
+  ]
+}

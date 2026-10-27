@@ -17,6 +17,9 @@ public final class MianbaoWeaponHudClient {
 
     @SubscribeEvent
     public static void onClientSetup(FMLClientSetupEvent event) {
+        // The two sonar bindings are drawn and captured on our own settings page now, so nothing
+        // here renames the pack's input actions any more: the rows that used to wear our labels
+        // (the pack's own 16 and 17) go back to being the pack's.
         if (FireControlCompat.isModLoaded("taov_core")) {
             MianbaoWeaponHudExecutor.register();
             if (FireControlCompat.isModLoaded("cbcmoreshells")) {

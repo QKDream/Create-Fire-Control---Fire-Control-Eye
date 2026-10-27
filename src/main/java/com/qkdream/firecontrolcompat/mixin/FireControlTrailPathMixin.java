@@ -2,8 +2,10 @@ package com.qkdream.firecontrolcompat.mixin;
 
 import com.hooya.stabilizedturret.client.MissileLongRangeEffects;
 import com.hooya.stabilizedturret.content.controller.MianbaoAirDefenseCompat;
+import com.hooya.stabilizedturret.content.controller.MianbaoCruiseMissileCompat;
 import com.hooya.stabilizedturret.content.controller.MianbaoCountermeasureCompat;
 import com.hooya.stabilizedturret.content.controller.MianbaoMissileCompat;
+import com.qkdream.firecontrolcompat.FireControlCompat;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -11,6 +13,7 @@ import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.particles.ParticleOptions;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.entity.Entity;
@@ -39,6 +42,8 @@ public abstract class FireControlTrailPathMixin {
     @Unique
     private static long firecontrolcompat$BUDGET_TICK = -1L;
     @Unique
+    private static long firecontrolcompat$CRUISE_REPORT = Long.MIN_VALUE;
+    @Unique
     private static int firecontrolcompat$BUDGET = 128;
 
     @Invoker("particle")
@@ -60,6 +65,22 @@ public abstract class FireControlTrailPathMixin {
             return;
         }
         Vec3 position = MianbaoMissileCompat.getWorldPosition(missile);
+        if (MianbaoCruiseMissileCompat.isMissile(missile)) {
+            long wall = System.currentTimeMillis();
+            if (firecontrolcompat$CRUISE_REPORT == Long.MIN_VALUE
+                    || wall - firecontrolcompat$CRUISE_REPORT >= 1000L) {
+                // The seed is tested directly on purpose: `wall - Long.MIN_VALUE` wraps to a
+                // negative number, so the bare difference was false forever and this report
+                // never appeared however often a cruise missile was drawn.
+                firecontrolcompat$CRUISE_REPORT = wall;
+                FireControlCompat.LOGGER.info(
+                        "[firecontrolcompat] cruise client draws type={} dist={} age={} camera={}",
+                        BuiltInRegistries.ENTITY_TYPE.getKey(missile.getType()),
+                        (int) Math.sqrt(camera.getPosition().distanceToSqr(position)),
+                        missile.tickCount,
+                        camera.getPosition());
+            }
+        }
         boolean remote = missile.getPersistentData().getBoolean("CreateFireControlRemoteVisual");
         if (!remote && camera.getPosition().distanceToSqr(position) <= 1024.0) {
             ci.cancel();

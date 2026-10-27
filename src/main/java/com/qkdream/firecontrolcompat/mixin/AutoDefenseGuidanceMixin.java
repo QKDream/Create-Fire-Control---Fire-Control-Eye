@@ -77,12 +77,20 @@ public abstract class AutoDefenseGuidanceMixin {
         firecontrolcompat$proxyShaolibId = null;
     }
 
+    /*
+     * Fire control 0.9.4 moved the missile half of this loop out of onTick into onMissileFuzes
+     * (MovingMissileFuze sweeps interceptor and threat together). Both names are listed and the
+     * handler is not required, so the bridge follows the pack wherever that call lives and simply
+     * does nothing when neither method carries it - the old single name made a moved call site a
+     * fatal mixin error that took the whole mod, and every later registration event with it.
+     */
     @Redirect(
-            method = "onTick",
+            method = {"onTick", "onMissileFuzes"},
             at = @At(
                     value = "INVOKE",
                     target = "Lcom/hooya/stabilizedturret/content/display/AutoDefenseMissileGuidance;findEntity(Lcom/hooya/stabilizedturret/content/display/ConnectedDisplayBlockEntity;Ljava/util/UUID;)Lnet/minecraft/world/entity/Entity;"
-            )
+            ),
+            require = 0
     )
     private static Entity firecontrolcompat$redirectFindEntityInTick(ConnectedDisplayBlockEntity display, UUID id) {
         Entity original = invokeFindEntityDisplay(display, id);
@@ -103,11 +111,12 @@ public abstract class AutoDefenseGuidanceMixin {
     }
 
     @Redirect(
-            method = "onTick",
+            method = {"onTick", "onMissileFuzes"},
             at = @At(
                     value = "INVOKE",
                     target = "Lcom/hooya/stabilizedturret/content/controller/MianbaoMissileCompat;getWorldPosition(Lnet/minecraft/world/entity/Entity;)Lnet/minecraft/world/phys/Vec3;"
-            )
+            ),
+            require = 0
     )
     private static Vec3 firecontrolcompat$redirectGetWorldPosition(Entity entity) {
         if (entity == firecontrolcompat$proxyEntity && firecontrolcompat$proxyShaolibId != null) {
@@ -118,11 +127,12 @@ public abstract class AutoDefenseGuidanceMixin {
     }
 
     @Inject(
-            method = "onTick",
+            method = {"onTick", "onMissileFuzes"},
             at = @At(
                     value = "INVOKE",
                     target = "Lcom/hooya/stabilizedturret/content/display/AutoDefenseMissileGuidance;intercept(Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/entity/Entity;Lnet/minecraft/world/phys/Vec3;Lcom/hooya/stabilizedturret/content/display/AutoDefenseMissileGuidance$Guided;)V"
-            )
+            ),
+            require = 0
     )
     private static void firecontrolcompat$beforeIntercept(CallbackInfo ci) {
         if (firecontrolcompat$proxyShaolibId != null) {

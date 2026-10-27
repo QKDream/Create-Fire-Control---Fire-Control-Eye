@@ -90,27 +90,18 @@ public class HeavyAirDefenseMissileEntity extends BeamRidingMissileEntity {
         return 36.0F;
     }
 
+    /**
+     * The heavy round carries the safety fuse: nothing detonates it until it has flown
+     * {@link #SAFETY_FUSE_DISTANCE} blocks (see BeamRidingMissileEntity#firecontrolcompat\).
+     */
     @Override
-    protected boolean hasLaunchBoost() {
-        return false;
+    protected boolean hasSafetyFuse() {
+        return true;
     }
 
     @Override
-    public void tick() {
-        super.tick();
-        if (this.level().isClientSide()) {
-            return;
-        }
-        Vec3 velocity = this.getDeltaMovement();
-        if (velocity.lengthSqr() > 1.0E-8) {
-            float yaw = (float) Math.toDegrees(Mth.atan2(velocity.x, velocity.z));
-            float pitch = (float) Math.toDegrees(Mth.atan2(velocity.y, velocity.horizontalDistance()));
-            this.setYRot(yaw);
-            this.setXRot(pitch);
-            this.yRotO = yaw;
-            this.xRotO = pitch;
-            this.hasImpulse = true;
-        }
+    protected boolean hasLaunchBoost() {
+        return false;
     }
 
     @Override

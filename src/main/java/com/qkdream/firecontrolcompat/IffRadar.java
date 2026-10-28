@@ -294,6 +294,7 @@ public final class IffRadar {
         // The target's own transponder state: switching one off, or changing its channel, changes
         // this reading and therefore the key, which is what stops the old answer being reused.
         UUID owner = firecontrolcompat$markOwner(level, id);
+        firecontrolcompat$reportExempt(level, id, owner);
         Set<String> targetChannels = owner == null ? Set.of() : channelsOfStructure(level, owner);
         String dimension = dimensionOf(level);
         String key = dimension + "/" + id + "/own" + own.hashCode()
@@ -451,6 +452,41 @@ public final class IffRadar {
      * structure, the platform that released it when it is one of this mod's rounds, and null when it
      * is neither (such a contact is never marked at all, so it has no target state to key on).
      */
+    /**
+     * Diagnostic for the same-body question, at most once per second.
+     *
+     * <p>Prints what the exemption actually asked and what came back: the contact, the structure its
+     * marking resolved to, whether that is the same body it stands in now, and which of the three
+     * routes answered ({@code sublevel} = the owner was resolved, {@code remembered} = only the pin
+     * was left, {@code none} = neither). "Same body" is the exemption, so this line is the one that
+     * says whether it was even answerable.</p>
+     */
+    private static void firecontrolcompat$reportExempt(Level level, UUID id, UUID owner) {
+        long now = System.currentTimeMillis();
+        if (firecontrolcompat$lastExempt != 0L && now - firecontrolcompat$lastExempt < 1000L) {
+            return;
+        }
+        firecontrolcompat$lastExempt = now;
+        UUID current = null;
+        boolean loaded = false;
+        try {
+            ServerLevel server = serverLevelOf(level);
+            if (server != null) {
+                var entity = server.getEntity(id);
+                loaded = entity != null;
+                current = IffOwnership.currentBody(server, entity);
+            }
+        } catch (Throwable ignored) {
+            // an unreadable entity is reported as not standing in any body
+        }
+        FireControlCompat.LOGGER.info("iff exempt: a={} b={} same-body={} basis={}",
+                id, owner == null ? "-" : owner,
+                owner != null && owner.equals(current),
+                owner == null ? "none" : (loaded ? "sublevel" : "remembered"));
+    }
+
+    private static long firecontrolcompat$lastExempt;
+
     private static UUID firecontrolcompat$markOwner(Level level, UUID id) {
         try {
             Entity entity = entityOf(level, id);
@@ -460,7 +496,14 @@ public final class IffRadar {
             if (!TargetClassifier.isCompatMissile(entity)) {
                 return null;
             }
-            return IffOwnership.subLevelOf(serverLevelOf(level), entity);
+            UUID pinned = IffOwnership.subLevelOf(serverLevelOf(level), entity);
+            if (pinned != null) {
+                return pinned;
+            }
+            // The entity is loaded but stands in no structure any more (it cleared the hull): the
+            // pin taken at launch is still the answer, and asking it by UUID is what keeps a round
+            // of this body friendly after it has flown away.
+            return IffOwnership.remembered(serverLevelOf(level), id);
         } catch (Throwable ignored) {
             return null;
         }

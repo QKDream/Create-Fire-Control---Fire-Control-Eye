@@ -5,9 +5,11 @@ import com.hooya.stabilizedturret.content.controller.FireControlWeaponInputs;
 import com.hooya.stabilizedturret.content.controller.MianbaoAirDefenseCompat;
 import com.hooya.stabilizedturret.content.controller.StabilizerControllerBlockEntity;
 import com.qkdream.firecontrolcompat.FireControlCompat;
+import com.qkdream.firecontrolcompat.MianbaoAaFireCompat;
 import java.lang.reflect.Field;
 import java.util.List;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -117,6 +119,50 @@ public abstract class AaFireGateMixin {
             }
             List<BindingRef> launchers = self.getAaMissileLaunchers();
             FireControlWeaponInputs.GroundWeapon selected = self.getSelectedGroundWeapon();
+            // The cadence, before anything else on this press. The pack's own loop is what releases
+            // the high-speed and heavy rails, and it has no interval for them - a held trigger
+            // emptied every tube. `observeAmmo` recognises a shot the pack released (the count
+            // dropped since the previous press) and `ready` is asked about every rail that could
+            // answer this press.
+            boolean anyReady = false;
+            boolean sawCandidate = false;
+            com.qkdream.firecontrolcompat.AaFireCadence.Kind cadenceKind = null;
+            net.minecraft.core.BlockPos cadencePos = null;
+            for (BindingRef ref : launchers) {
+                int ammo = MianbaoAirDefenseCompat.getAmmoCount(level, ref);
+                boolean ordinary = MianbaoAirDefenseCompat.hasOrdinaryRound(level, ref);
+                com.qkdream.firecontrolcompat.AaFireCadence.observeAmmo(level, ref.pos(), ammo);
+                if (ammo <= 0) {
+                    continue;
+                }
+                if (selected != null && !selected.acceptsAaRound(ordinary)) {
+                    continue;
+                }
+                BlockEntity railEntity = null;
+                try {
+                    railEntity = level.getBlockEntity(ref.pos());
+                } catch (Throwable ignored) {
+                    // a rail whose block entity cannot be read still counts as a candidate
+                }
+                String roundName = railEntity == null ? null : MianbaoAaFireCompat.roundName(railEntity);
+                com.qkdream.firecontrolcompat.AaFireCadence.Kind kind =
+                    com.qkdream.firecontrolcompat.AaFireCadence.kindOf(ordinary, roundName);
+                sawCandidate = true;
+                if (cadencePos == null) {
+                    cadenceKind = kind;
+                    cadencePos = ref.pos();
+                }
+                if (com.qkdream.firecontrolcompat.AaFireCadence.ready(level, ref.pos(), kind)) {
+                    anyReady = true;
+                }
+            }
+            if (sawCandidate && !anyReady) {
+                // Every rail that could answer is still inside its interval. Nothing is fired, and
+                // the line says which rail was asked and how long it has left.
+                com.qkdream.firecontrolcompat.AaFireCadence.log(level, cadencePos, cadenceKind, false);
+                ci.cancel();
+                return;
+            }
             int loaded = 0;
             int accepted = 0;
             boolean ordinaryFirst = false;

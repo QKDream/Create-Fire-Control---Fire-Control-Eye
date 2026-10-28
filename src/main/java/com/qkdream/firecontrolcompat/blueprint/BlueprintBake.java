@@ -476,7 +476,80 @@ public final class BlueprintBake {
      * uses. Going through a CompoundTag rather than a file also avoids assuming
      * those bytes would survive a formal {@code StructureTemplate.load}.
      */
+    /**
+     * The bake entry.
+     *
+     * <p>States the thread it was asked on, and moves the werk to the client thread when it was
+     * asked from anywhere else - the renderer pass needs baked models and block-entity renderers,
+     * which only exist there. `offloaded=` and `wait_ms=` say whether that happened and what it
+     * cost, so a slow export from a worker thread is visible rather than mysterious.</p>
+     */
     public static int bake(CompoundTag root, String name) throws IOException {
+        logThread("bake", name);
+        Minecraft client = Minecraft.getInstance();
+        if (client == null) {
+            throw new IOException("no client: the bake needs baked models");
+        }
+        if (client.isSameThread()) {
+            return bakeOnClientThread(root, name);
+        }
+        final int[] result = new int[1];
+        final Throwable[] failure = new Throwable[1];
+        final java.util.concurrent.CompletableFuture<Void> done = new java.util.concurrent.CompletableFuture<>();
+        long started = System.nanoTime();
+        client.execute(() -> {
+            try {
+                result[0] = bakeOnClientThread(root, name);
+            } catch (Throwable t) {
+                failure[0] = t;
+            } finally {
+                done.complete(null);
+            }
+        });
+        try {
+            done.get(180, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception timeout) {
+            failure[0] = timeout;
+        }
+        BlueprintExporter.LOGGER.info("blueprint export: offloaded=true wait_ms={} name={} failed={}",
+            (System.nanoTime() - started) / 1_000_000L, name, failure[0] != null);
+        if (failure[0] instanceof IOException io) {
+            throw io;
+        }
+        if (failure[0] != null) {
+            throw new IOException(failure[0]);
+        }
+        return result[0];
+    }
+
+    /**
+     * The thread and the resources the export is really running with.
+     *
+     * <p>`models=` is the one that matters: it is true only when the model manager answers, which is
+     * what "baked models are reachable" means. On the server thread it is false and every block
+     * would have to be guessed at.</p>
+     */
+    private static void logThread(String stage, String name) {
+        Minecraft client = null;
+        boolean sameThread = false;
+        boolean models = false;
+        try {
+            client = Minecraft.getInstance();
+            sameThread = client != null && client.isSameThread();
+            models = client != null && client.getModelManager() != null
+                && client.getModelManager().getMissingModel() != null;
+        } catch (Throwable ignored) {
+            // a half-initialised client is reported as no models rather than thrown
+        }
+        BlueprintExporter.LOGGER.info(
+            "blueprint export: stage={} name={} thread={} side={} models={} client-thread={}",
+            stage, name, Thread.currentThread().getName(),
+            net.neoforged.fml.loading.FMLEnvironment.dist.isClient() ? "client" : "server",
+            models, sameThread);
+    }
+
+    /** The bake itself; always called on the client thread by {@link #bake(CompoundTag, String)}. */
+    private static int bakeOnClientThread(CompoundTag root, String name) throws IOException {
         Minecraft mc = Minecraft.getInstance();
         Level level = mc.level;
         if (level == null) {
@@ -1017,8 +1090,35 @@ public final class BlueprintBake {
         pose.popPose();
     }
 
+    /** Material -> the block ids that contributed to it, for the material line. */
+    private static final java.util.Map<String, java.util.LinkedHashSet<String>> MATERIAL_BLOCKS =
+        new java.util.LinkedHashMap<>();
+
+    /** Remembers which block a material belongs to, for the diagnostics. */
+    private static void noteMaterialBlock(Collector collector, int fromFace, BlockState state) {
+        try {
+            String blockId = String.valueOf(net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                .getKey(state.getBlock()));
+            for (int i = fromFace; i < collector.faces.size(); i++) {
+                MATERIAL_BLOCKS
+                    .computeIfAbsent(collector.faces.get(i).material,
+                        ignored -> new java.util.LinkedHashSet<>())
+                    .add(blockId);
+            }
+        } catch (Throwable ignored) {
+            // a diagnostic that fails is not worth a crash
+        }
+    }
+
     /** How many partial-block lines the log may carry per export. */
     private static int PARTIAL_LOGGED = 0;
+
+    /** How many block-entity capture lines the log may carry per export. */
+    private static int BER_CAPTURE_LOGGED = 0;
+
+    /** Block id -> the renderer that could not be captured, written beside the mesh. */
+    private static final java.util.Map<String, String> UNSUPPORTED_RENDERERS =
+        new java.util.LinkedHashMap<>();
 
     /**
      * Whether a model has any quad at all for this state, with this block entity's ModelData.
@@ -1207,8 +1307,20 @@ public final class BlueprintBake {
 
         float[] tint = {1.0f, 1.0f, 1.0f, 1.0f};
         int[] light = {0, 0};
+        // The block's own sheet, which is the authority for a block model: a glass pane is cutout and
+        // a sheet of glass is translucent because `ItemBlockRenderTypes` says so, not because of which
+        // render types this particular baked model reported. Asked first, then the model's own layers
+        // refine it (a mod model may draw several of them).
+        try {
+            hintRenderType(ItemBlockRenderTypes.getRenderType(state, false));
+        } catch (Throwable ignored) {
+            // a block whose sheet cannot be resolved keeps whatever the model's layers say
+        }
         for (Direction dir : dirs) {
             for (RenderType layer : layers) {
+                // The render type of the quads about to be emitted decides the material's layer:
+                // plain glass is drawn on the translucent sheet even though its texture is cutout.
+                hintRenderType(layer);
                 java.util.List<net.minecraft.client.renderer.block.model.BakedQuad> quads;
                 try {
                     quads = ext.getQuads(state, dir, random, modelData, layer);
@@ -1314,19 +1426,35 @@ public final class BlueprintBake {
             // says which, without another guess - the transform has already been got wrong
             // several times by reasoning about it.
             collector.beginRawProbe();
+            boolean ok = false;
             try {
                 // `local`, not the shared `pose`: the renderer follows the pose it is handed,
                 // and the collector adds the frame. Handing it the shared pose - which already
                 // contains the frame - put block-entity geometry through the frame twice, which
                 // is why it rendered in the wrong place while the model faces were right.
                 local.pushPose();
-                renderer.render(be, 0.0f, local, capture, 0, 0);
+                // Full brightness rather than 0: a renderer that multiplies its colour by the
+                // packed light comes out black at 0, and the export carries no lighting anyway.
+                renderer.render(be, 0.0f, local, capture,
+                                net.minecraft.client.renderer.LightTexture.FULL_BRIGHT, 0);
                 local.popPose();
+                ok = true;
                 // Back to the model convention, so a quad emitted afterwards is not left in
                 // atlas coordinates because a renderer happened to run before it.
                 collector.setUvNeedsAtlasConversion(true);
                 drawn++;
-                if (DIAGNOSTICS && probes.size() < 8) {
+                if (BER_CAPTURE_LOGGED < 20) {
+                BER_CAPTURE_LOGGED++;
+                var blockId = net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                    .getKey(be.getBlockState().getBlock());
+                BlueprintExporter.LOGGER.info(
+                    "ber-capture: block={} ber={} ok={} quads={} renderType={}",
+                    blockId, renderer.getClass().getSimpleName(), ok,
+                    collector.faces.size() - facesBefore,
+                    capture.usedRenderTypes.isEmpty() ? "-"
+                        : String.join("|", capture.usedRenderTypes));
+            }
+            if (DIAGNOSTICS && probes.size() < 8) {
                     // The block id, not the block-entity type. `BlockEntityType.toString` prints
                     // an identity hash, which says nothing about which block was drawn - and
                     // the block is what has to be named to leave a renderer out of the export.
@@ -1338,8 +1466,17 @@ public final class BlueprintBake {
                 }
             } catch (Throwable t) {
                 // A renderer that needs something the schematic cannot provide - a level
-                // that ticks, a player, a rendered entity - must not take the export down.
+                // that ticks, a player, a rendered entity - must not take the export down, but it
+                // must not vanish without a trace either: the block keeps its own model shell and
+                // is named here and in the export's notes.
                 skipped++;
+                String failedId = String.valueOf(net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                    .getKey(be.getBlockState().getBlock()));
+                UNSUPPORTED_RENDERERS.put(failedId, renderer.getClass().getName()
+                    + ": " + t.getClass().getSimpleName());
+                BlueprintExporter.NOTES.add("renderer failed for " + failedId + " ("
+                    + renderer.getClass().getSimpleName() + "): " + t.getMessage()
+                    + " - the block is exported as its own model only");
                 if (DIAGNOSTICS) {
                     BlueprintExporter.LOGGER.warn(
                         "block entity {} at {} did not render: {}",
@@ -1650,11 +1787,218 @@ public final class BlueprintBake {
      * <p>Matches {@code setSprite}'s naming so a block-entity face and a model face that share
      * a texture end up in one material rather than two.
      */
+    /** The three transparency classes a material can belong to. */
+    private enum Layer {
+        SOLID("M_solid"),
+        CUTOUT("M_cutout"),
+        TRANSLUCENT("M_translucent");
+
+        final String prefix;
+
+        Layer(String prefix) {
+            this.prefix = prefix;
+        }
+    }
+
+    /** One texture's alpha verdict: its layer and the mean alpha of its painted texels. */
+    private record Alpha(Layer layer, float mean) {
+    }
+
+    /** Classified once per texture path; an export asks about the same handful many times. */
+    private static final java.util.Map<String, Alpha> TEXTURE_ALPHA = new java.util.HashMap<>();
+
+    /**
+     * Which layer a texture belongs to, from its own pixels.
+     *
+     * <p>Decided from the image rather than from a {@code RenderType}, because the render type is
+     * not always recoverable while the PNG behind a material always is - and "is this glass" is a
+     * property of the image anyway. A single partial-alpha texel is enough to call a texture
+     * translucent: that is what stained glass and ice look like, while a fence or a pane is either
+     * fully painted or fully clear.</p>
+     */
+    private static Alpha textureAlpha(String texture) {
+        if (texture == null || texture.isEmpty()) {
+            return new Alpha(Layer.SOLID, 1.0f);
+        }
+        Alpha cached = TEXTURE_ALPHA.get(texture);
+        if (cached != null) {
+            return cached;
+        }
+        Alpha verdict = new Alpha(Layer.SOLID, 1.0f);
+        try {
+            java.io.InputStream stream = openTexture(texture);
+            if (stream != null) {
+                try (stream) {
+                    java.awt.image.BufferedImage image = javax.imageio.ImageIO.read(stream);
+                    if (image != null) {
+                        boolean alphaChannel = image.getColorModel().hasAlpha();
+                        boolean transparent = false;
+                        boolean partial = false;
+                        long sum = 0L;
+                        long painted = 0L;
+                        for (int y = 0; y < image.getHeight(); y++) {
+                            for (int x = 0; x < image.getWidth(); x++) {
+                                int alpha = alphaChannel ? (image.getRGB(x, y) >>> 24) & 0xFF : 255;
+                                if (alpha < 8) {
+                                    transparent = true;
+                                } else if (alpha < 247) {
+                                    partial = true;
+                                    sum += alpha;
+                                    painted++;
+                                } else {
+                                    sum += alpha;
+                                    painted++;
+                                }
+                            }
+                        }
+                        Layer layer = partial ? Layer.TRANSLUCENT
+                            : (transparent ? Layer.CUTOUT : Layer.SOLID);
+                        float mean = painted == 0L ? 1.0f : (float) sum / (float) painted / 255.0f;
+                        verdict = new Alpha(layer, Math.max(0.02f, Math.min(1.0f, mean)));
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // an unreadable texture is treated as opaque: a wrong `d` is worse than none
+        }
+        TEXTURE_ALPHA.put(texture, verdict);
+        return verdict;
+    }
+
+    /** The layer of a texture, from its own alpha channel. */
+    private static Layer textureLayerOf(String texture) {
+        return textureAlpha(texture).layer;
+    }
+
+    /**
+     * What the render type says the material is.
+     *
+     * <p>This is the game's own answer and it has to be the primary one: plain glass's texture is
+     * fully clear or fully opaque, so its alpha channel says "cutout" while the game draws it on the
+     * translucent sheet. A mod render type is recognised by name; anything unrecognised is solid,
+     * which is the safe direction (an opaque material is never worse than one that blends wrongly).</p>
+     */
+    private static Layer layerOfRenderType(RenderType type) {
+        if (type == null) {
+            return Layer.SOLID;
+        }
+        try {
+            if (type == RenderType.translucent() || type == RenderType.translucentMovingBlock()) {
+                return Layer.TRANSLUCENT;
+            }
+            if (type == RenderType.cutout() || type == RenderType.cutoutMipped()) {
+                return Layer.CUTOUT;
+            }
+            if (type == RenderType.solid()) {
+                return Layer.SOLID;
+            }
+        } catch (Throwable ignored) {
+            // a render type whose sheet cannot be compared: fall through to the name
+        }
+        String name = String.valueOf(type).toLowerCase(java.util.Locale.ROOT);
+        if (name.contains("translucent")) {
+            return Layer.TRANSLUCENT;
+        }
+        if (name.contains("cutout")) {
+            return Layer.CUTOUT;
+        }
+        return Layer.SOLID;
+    }
+
+    /** The stronger of two layers: the render type and the texture can only add transparency. */
+    private static Layer strongest(Layer first, Layer second) {
+        if (first == null) {
+            return second == null ? Layer.SOLID : second;
+        }
+        if (second == null) {
+            return first;
+        }
+        return first.ordinal() >= second.ordinal() ? first : second;
+    }
+
+    /** The layer of a texture alone, for material names when no render type was seen. */
+    private static Layer layerOf(String texture) {
+        return strongest(layerHintLocal.get(), textureLayerOf(texture));
+    }
+
+    /** The render type of the material currently being emitted, set by the model and capture passes. */
+    private static final ThreadLocal<Layer> layerHintLocal =
+        ThreadLocal.withInitial(() -> Layer.SOLID);
+
+    /** Records what the render type of the next quads says. */
+    private static void hintRenderType(RenderType type) {
+        layerHintLocal.set(layerOfRenderType(type));
+    }
+
+    /** The layer a material belongs to, read back from its own name. */
+    private static Layer layerFromName(String material) {
+        if (material == null) {
+            return Layer.SOLID;
+        }
+        if (material.startsWith(Layer.TRANSLUCENT.prefix)) {
+            return Layer.TRANSLUCENT;
+        }
+        if (material.startsWith(Layer.CUTOUT.prefix)) {
+            return Layer.CUTOUT;
+        }
+        return Layer.SOLID;
+    }
+
+    /** The layer a material belongs to, given what its render type and its texture say. */
+    private static Layer layerFor(String texture) {
+        return strongest(layerHintLocal.get(), textureLayerOf(texture));
+    }
+
+    /** The texture's stream, trying the same path shapes a model may have written. */
+    private static java.io.InputStream openTexture(String texture) {
+        try {
+            var minecraft = net.minecraft.client.Minecraft.getInstance();
+            if (minecraft == null) {
+                return null;
+            }
+            net.minecraft.resources.ResourceLocation base =
+                net.minecraft.resources.ResourceLocation.tryParse(texture);
+            if (base == null) {
+                return null;
+            }
+            String path = base.getPath();
+            boolean hasPng = path.toLowerCase(java.util.Locale.ROOT).endsWith(".png");
+            boolean hasTextures = path.startsWith("textures/");
+            java.util.LinkedHashSet<String> candidates = new java.util.LinkedHashSet<>();
+            for (String prefix : hasTextures ? new String[] {""} : new String[] {"textures/", ""}) {
+                for (String suffix : hasPng ? new String[] {""} : new String[] {".png", ""}) {
+                    candidates.add(prefix + path + suffix);
+                }
+            }
+            for (String candidate : candidates) {
+                var location = net.minecraft.resources.ResourceLocation.tryParse(
+                    base.getNamespace() + ":" + candidate);
+                if (location == null) {
+                    continue;
+                }
+                var resource = minecraft.getResourceManager().getResource(location);
+                if (!resource.isEmpty()) {
+                    return resource.get().open();
+                }
+            }
+        } catch (Throwable ignored) {
+            // no resource manager yet: opaque
+        }
+        return null;
+    }
+
+    /**
+     * The material name: layer first, then the namespace and path.
+     *
+     * <p>{@code M_translucent_minecraft_block_glass} tells whoever opens the .mtl what to expect
+     * before they look at a single line of it, which is the point - the report was "glass exports
+     * opaque" and the name now says glass, not just a texture path.</p>
+     */
     private static String materialNameFor(String texture) {
         int colon = texture.indexOf(':');
         String namespace = colon < 0 ? "minecraft" : texture.substring(0, colon);
         String path = colon < 0 ? texture : texture.substring(colon + 1);
-        return namespace + "_" + path.replace('/', '_');
+        return layerFor(texture).prefix + "_" + namespace + "_" + path.replace('/', '_');
     }
 
     /**
@@ -1769,6 +2113,8 @@ public final class BlueprintBake {
         private final Collector collector;
         /** One lookup per render type rather than per vertex. */
         private final java.util.Map<RenderType, String> textures = new java.util.HashMap<>();
+        /** Every render type this capture was asked for, named, for the log line. */
+        final java.util.LinkedHashSet<String> usedRenderTypes = new java.util.LinkedHashSet<>();
 
         BlockEntityCapture(Collector collector) {
             this.collector = collector;
@@ -1777,6 +2123,8 @@ public final class BlueprintBake {
         @Override
         public com.mojang.blaze3d.vertex.VertexConsumer getBuffer(RenderType type) {
             if (type != null) {
+                hintRenderType(type);
+                usedRenderTypes.add(String.valueOf(type));
                 // The block's own sprite first: the render type can only offer the atlas, whose
                 // pixels cannot be copied. See spritePathForBlock.
                 String texture = textures.computeIfAbsent(type,
@@ -2126,6 +2474,16 @@ public final class BlueprintBake {
         collector.setUvNeedsAtlasConversion(true);
         int[] data = quad.getVertices();
         int stride = data.length / 4;
+        // Buffered first, because a cutout or translucent face has to be written twice - once as
+        // given and once reversed - and the second copy needs the same numbers.
+        float[] px = new float[4];
+        float[] py = new float[4];
+        float[] pz = new float[4];
+        float[] pu = new float[4];
+        float[] pv = new float[4];
+        float[] pnx = new float[4];
+        float[] pny = new float[4];
+        float[] pnz = new float[4];
         for (int corner = 0; corner < 4; corner++) {
             int base = corner * stride;
             float x = Float.intBitsToFloat(data[base]);
@@ -2151,10 +2509,22 @@ public final class BlueprintBake {
             // components for 3547 faces, one connected piece per quad. A block face has
             // only six possible directions, so rounding here costs nothing and is what
             // keeps the surface continuous.
-            collector.addVertex(point.x, point.y, point.z, -1, u, v, 0, 0,
-                                snapAxis(direction.x), snapAxis(direction.y),
-                                snapAxis(direction.z));
+            px[corner] = point.x;
+            py[corner] = point.y;
+            pz[corner] = point.z;
+            pu[corner] = u;
+            pv[corner] = v;
+            pnx[corner] = snapAxis(direction.x);
+            pny[corner] = snapAxis(direction.y);
+            pnz[corner] = snapAxis(direction.z);
         }
+        for (int corner = 0; corner < 4; corner++) {
+            collector.addVertex(px[corner], py[corner], pz[corner], -1, pu[corner], pv[corner],
+                                0, 0, pnx[corner], pny[corner], pnz[corner]);
+        }
+        // The reverse copy of a cutout or translucent face is added by Collector.addFace, which is
+        // where every face is built - including the ones a block-entity renderer writes, which this
+        // path never sees.
     }
 
     /** Round a normal component to -1, 0 or 1, whichever it is nearest. */
@@ -2361,23 +2731,107 @@ public final class BlueprintBake {
         // texture at all.
         Map<String, String> materialFile = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : materialAtlas.entrySet()) {
-            String textureFile = writeSpritePng(outDir, entry.getValue());
+            String textureFile = writeSpritePng(outDir, entry.getValue(), layerFromName(entry.getKey()));
             materialFile.put(entry.getKey(), textureFile);
         }
 
+        // How many materials landed in each layer, and how many of them carry transparency. This is
+        // the one line that answers "did glass export as glass": a structure with stained glass or a
+        // pane in it must report translucent >= 1.
+        Map<Layer, Integer> layerCount = new LinkedHashMap<>();
+        int alphaImages = 0;
+        int doubleSided = 0;
         try (BufferedWriter w = Files.newBufferedWriter(mtl)) {
             w.write("# Sable blueprint export materials\n");
             for (String mat : byMaterial.keySet()) {
-                w.write("\nnewmtl " + mat + "\n");
-                w.write("Kd 1.000 1.000 1.000\nKa 0.000 0.000 0.000\nKs 0.000 0.000 0.000\n");
-                w.write("d 1.0\nillum 1\n");
+                String texturePath = materialAtlas.get(mat);
+                Layer layer = layerFromName(mat);
+                Alpha alpha = texturePath == null ? new Alpha(Layer.SOLID, 1.0f) : textureAlpha(texturePath);
+                layerCount.merge(layer, 1, Integer::sum);
                 String file = materialFile.get(mat);
+                w.write("\nnewmtl " + mat + "\n");
+                w.write("# layer: " + layer.name().toLowerCase(java.util.Locale.ROOT) + "\n");
+                if (layer != Layer.SOLID) {
+                    w.write("# double_sided: true\n");
+                    doubleSided++;
+                }
+                w.write("Kd 1.000 1.000 1.000\nKa 0.000 0.000 0.000\nKs 0.000 0.000 0.000\n");
+                if (layer == Layer.TRANSLUCENT) {
+                    // Both forms, because viewers differ: `d` is the dissolved amount Blender reads,
+                    // `Tr` is the same value inverted for viewers that predate it. illum 2 says the
+                    // material has a transparency channel rather than being lit opaque.
+                    float d = Math.max(0.02f, Math.min(1.0f, alpha.mean()));
+                    w.write(String.format(java.util.Locale.ROOT, "d %.3f\n", d));
+                    w.write(String.format(java.util.Locale.ROOT, "Tr %.3f\n", 1.0f - d));
+                    w.write("illum 2\n");
+                    alphaImages++;
+                } else if (layer == Layer.CUTOUT) {
+                    // Opaque material with holes in its geometry: no d/Tr, because a viewer that
+                    // reads them would blend the whole plank instead of cutting the holes out.
+                    w.write("illum 2\n");
+                    alphaImages++;
+                } else {
+                    w.write("d 1.0\nillum 1\n");
+                }
                 if (file != null) {
                     // Relative to the output folder, with forward slashes, which is what
                     // Blender's OBJ importer resolves against the .mtl's own directory.
                     w.write("map_Kd " + file + "\n");
                 }
+                // The one line that answers "is the glass material actually the glass": which blocks
+                // it belongs to, the layer the sheet said, which image was written, and the UV space
+                // the face coordinates are in (local = 0..1 of that image, which is what this mode
+                // produces; the frame capture mode reports tlas instead).
+                BlueprintExporter.LOGGER.info(
+                    "material: block={} layer={} tex={} uv-space={} faces={} alpha_mean={}",
+                    MATERIAL_BLOCKS.getOrDefault(mat, new java.util.LinkedHashSet<>()),
+                    layer.name().toLowerCase(java.util.Locale.ROOT),
+                    file == null ? "-" : file, "local", byMaterial.get(mat).size(),
+                    String.format(java.util.Locale.ROOT, "%.3f", alpha.mean()));
             }
+        }
+        BlueprintExporter.LOGGER.info(
+            "blueprint materials: total={} solid={} cutout={} translucent={} alpha_pngs={}"
+                + " double_sided={}",
+            byMaterial.size(), layerCount.getOrDefault(Layer.SOLID, 0),
+            layerCount.getOrDefault(Layer.CUTOUT, 0), layerCount.getOrDefault(Layer.TRANSLUCENT, 0),
+            alphaImages, doubleSided);
+        for (Map.Entry<String, String> entry : materialAtlas.entrySet()) {
+            String texturePath = entry.getValue();
+            Layer entryLayer = layerFromName(entry.getKey());
+            if (texturePath == null || entryLayer == Layer.SOLID) {
+                continue;
+            }
+            Alpha alpha = textureAlpha(texturePath);
+            BlueprintExporter.LOGGER.info(
+                "blueprint material[{}]: name={} map_Kd={} alpha_mean={} d={}"
+                    + " double_sided={}",
+                alpha.layer().name().toLowerCase(java.util.Locale.ROOT), entry.getKey(),
+                materialFile.get(entry.getKey()),
+                String.format(java.util.Locale.ROOT, "%.3f", alpha.mean()),
+                String.format(java.util.Locale.ROOT, "%.3f", Math.max(0.02f, alpha.mean())),
+                alpha.layer() != Layer.SOLID);
+        }
+        // The parts a renderer could not describe, named beside the mesh. A hole with no explanation
+        // is what the report was about, so the alternative to geometry is an explicit statement that
+        // this block needs its renderer rebuilt rather than silence.
+        if (!UNSUPPORTED_RENDERERS.isEmpty()) {
+            Path unsupported = outDir.resolve(name + ".unsupported.json");
+            try (BufferedWriter w = Files.newBufferedWriter(unsupported)) {
+                w.write("{\n  \"note\": \"these blocks were exported as their own model only; their"
+                        + " block-entity renderer could not be captured\",\n  \"blocks\": {\n");
+                int index = 0;
+                for (Map.Entry<String, String> entry : UNSUPPORTED_RENDERERS.entrySet()) {
+                    w.write("    \"" + entry.getKey().replace("\"", "") + "\": \""
+                            + entry.getValue().replace("\"", "").replace("\n", " ") + "\"");
+                    w.write(++index < UNSUPPORTED_RENDERERS.size() ? ",\n" : "\n");
+                }
+                w.write("  }\n}\n");
+            } catch (Throwable t) {
+                BlueprintExporter.LOGGER.warn("could not write {}: {}", unsupported, t.toString());
+            }
+            BlueprintExporter.LOGGER.info("ber-capture: {} block(s) had no usable renderer, listed in"
+                + " {}", UNSUPPORTED_RENDERERS.size(), unsupported.getFileName());
         }
         BlueprintExporter.LOGGER.info("wrote {} ({} faces)", obj, written);
         return written;
@@ -2610,7 +3064,7 @@ public final class BlueprintBake {
      * the {@code .png} suffix, depending on how the mod authored it. Returns the
      * output-relative path that was written, or null.
      */
-    private static String writeSpritePng(Path outDir, String texturePath) {
+    private static String writeSpritePng(Path outDir, String texturePath, Layer layer) {
         if (texturePath == null || texturePath.isEmpty()) {
             return null;
         }
@@ -2650,9 +3104,43 @@ public final class BlueprintBake {
             try {
                 Path target = outDir.resolve(candidate);
                 Files.createDirectories(target.getParent());
+                // Always rewritten through ImageIO rather than copied byte for byte, for two
+                // reasons. An image without an alpha channel would arrive opaque in a viewer that
+                // needs one, and a cutout texture has to be binarised: a fence's texture is drawn
+                // with soft edges, and keeping the half-transparent texels lets a viewer blend them
+                // into a grey fringe around every hole. A cutout face is opaque or absent, so
+                // >=128 becomes 255 and everything else becomes 0 (with the colour cleared, so no
+                // stray hue leaks into the transparent side of a mip).
                 try (var stream = resource.get().open()) {
-                    Files.copy(stream, target,
-                               java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    java.awt.image.BufferedImage source = javax.imageio.ImageIO.read(stream);
+                    if (source == null) {
+                        try (var retry = resource.get().open()) {
+                            Files.copy(retry, target,
+                                       java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        }
+                        return candidate.replace('\\', '/');
+                    }
+                    boolean needsAlpha = !source.getColorModel().hasAlpha();
+                    int width = source.getWidth();
+                    int height = source.getHeight();
+                    java.awt.image.BufferedImage out = new java.awt.image.BufferedImage(
+                        width, height, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                    for (int y = 0; y < height; y++) {
+                        for (int x = 0; x < width; x++) {
+                            int argb = source.getRGB(x, y);
+                            int alpha = needsAlpha ? 255 : (argb >>> 24) & 0xFF;
+                            if (layer == Layer.CUTOUT) {
+                                if (alpha >= 128) {
+                                    out.setRGB(x, y, argb | 0xFF000000);
+                                } else {
+                                    out.setRGB(x, y, 0x00000000);
+                                }
+                            } else {
+                                out.setRGB(x, y, (argb & 0x00FFFFFF) | (alpha << 24));
+                            }
+                        }
+                    }
+                    javax.imageio.ImageIO.write(out, "png", target.toFile());
                 }
                 return candidate.replace('\\', '/');
             } catch (Throwable t) {
@@ -2773,6 +3261,19 @@ public final class BlueprintBake {
             new LinkedHashMap<>();
         /** Direction of the quad currently being written, for material grouping. */
         private String currentMaterial = "unknown";
+
+        /** Transparency class of the material being emitted, which decides double-siding. */
+        private Layer currentLayer = Layer.SOLID;
+
+        /** Cutout and translucent geometry is written twice, back to back, so it reads from both sides. */
+        boolean doubleSided() {
+            return this.currentLayer != Layer.SOLID;
+        }
+
+        /** The layer of the current material, for the .mtl. */
+        Layer layer() {
+            return this.currentLayer;
+        }
         private String currentAtlasPath;
         /** Sprite of the quad currently being written, for per-material grouping. */
         private TextureAtlasSprite currentSprite;
@@ -2871,6 +3372,9 @@ public final class BlueprintBake {
                 this.currentMaterial = material;
             }
             this.currentAtlasPath = texturePath;
+            if (texturePath != null && !texturePath.isEmpty()) {
+                this.currentLayer = layerFor(texturePath);
+            }
             this.materialPinned = true;
             this.pinnedUMin = Float.MAX_VALUE;
             this.pinnedUMax = -Float.MAX_VALUE;
@@ -3117,8 +3621,10 @@ public final class BlueprintBake {
                 // hands over the quad's own sprite. That sprite IS the answer - a real, named,
                 // copyable texture - and ignoring it while a pin was active threw it away for
                 // the atlas name. Letting it through is what recovers those faces.
-                this.currentMaterial = id.getNamespace() + "_" + id.getPath().replace('/', '_');
                 this.currentAtlasPath = id.getNamespace() + ":" + id.getPath();
+                this.currentLayer = layerFor(this.currentAtlasPath);
+                this.currentMaterial = this.currentLayer.prefix + "_"
+                    + id.getNamespace() + "_" + id.getPath().replace('/', '_');
             }
         }
 
@@ -3735,22 +4241,34 @@ public final class BlueprintBake {
         }
 
         private void addFace(int count) {
+            addFaceOne(count, false);
+            if (doubleSided() && count >= 3) {
+                // The reverse copy, so a pane, a fence or a sheet of glass is visible from both
+                // sides. Done here rather than per draw path, because every face - a model's quad
+                // and a block-entity renderer's own vertices alike - passes through this method.
+                addFaceOne(count, true);
+            }
+        }
+
+        private void addFaceOne(int count, boolean reversed) {
             // A pinned material means a block-entity renderer chose it, which is the signal
             // that these faces should be grouped by texture rather than by sub-level.
             Face face = new Face(count, currentMaterial, currentAtlasPath, currentSubLevel,
                                  materialPinned ? currentSubLevel : -1);
             for (int i = 0; i < count; i++) {
-                float[] p = quad.get(i);
+                int src = reversed ? count - 1 - i : i;
+                float[] p = quad.get(src);
                 face.pos[i * 3] = p[0];
                 face.pos[i * 3 + 1] = p[1];
                 face.pos[i * 3 + 2] = p[2];
-                float[] u = uvQuad.get(i);
+                float[] u = uvQuad.get(src);
                 face.uv[i * 2] = u[0];
                 face.uv[i * 2 + 1] = u[1];
-                float[] n = nQuad.get(i);
-                face.norm[i * 3] = n[0];
-                face.norm[i * 3 + 1] = n[1];
-                face.norm[i * 3 + 2] = n[2];
+                float[] n = nQuad.get(src);
+                float flip = reversed ? -1.0f : 1.0f;
+                face.norm[i * 3] = n[0] * flip;
+                face.norm[i * 3 + 1] = n[1] * flip;
+                face.norm[i * 3 + 2] = n[2] * flip;
             }
             faces.add(face);
         }

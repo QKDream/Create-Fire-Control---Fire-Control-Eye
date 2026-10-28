@@ -86,6 +86,12 @@ public final class BlueprintExporter {
     }
 
     private static void onClientTick(ClientTickEvent.Post event) {
+        // The capture window is one frame; this closes it even if the render loop never calls back.
+        try {
+            com.qkdream.firecontrolcompat.blueprint.capture.CaptureExport.tick();
+        } catch (Throwable ignored) {
+            // never let the capture state machine affect a tick
+        }
         if (openExporter == null) {
             return;
         }
@@ -111,6 +117,18 @@ public final class BlueprintExporter {
                 .then(Commands.literal("where")
                     .executes(ctx -> {
                         BlueprintBake.reportDirs(ctx.getSource());
+                        return 1;
+                    }))
+                .then(Commands.literal("capture")
+                    .then(Commands.argument("name", StringArgumentType.string())
+                        .executes(ctx -> {
+                            com.qkdream.firecontrolcompat.blueprint.capture.CaptureExport.arm(
+                                StringArgumentType.getString(ctx, "name"), 24.0D);
+                            return 1;
+                        }))
+                    .executes(ctx -> {
+                        com.qkdream.firecontrolcompat.blueprint.capture.CaptureExport.arm(
+                            "capture", 24.0D);
                         return 1;
                     }))
                 .then(Commands.literal("gui")

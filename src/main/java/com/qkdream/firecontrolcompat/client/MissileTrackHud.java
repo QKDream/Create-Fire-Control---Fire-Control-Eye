@@ -69,7 +69,11 @@ public final class MissileTrackHud {
                     ClientAimState.isScoped(), inFlight, searching, SeekerHudPayload.lockedTargetPosition());
         }
         Vec3 locked = searching ? SeekerHudPayload.lockedTargetPosition() : null;
-        if (!inFlight && fresh && (showGround || showAircraft || searching)) {
+        // A missile in the air must not hide the frames of a head that is still watching: the two
+        // are different states and used to be conflated, which is why the lock frame "disappeared"
+        // while a search was running (`inFlight=true searching=true` in the user's log).
+        boolean suppressedByFlight = inFlight && !searching;
+        if (!suppressedByFlight && fresh && (showGround || showAircraft || searching)) {
             Vec3 origin = SeekerHudPayload.launchOrigin();
             Vec3 direction = SeekerHudPayload.launchDirection();
             // The two frames are no longer the same window. The off-axis frame is the
@@ -101,11 +105,19 @@ public final class MissileTrackHud {
                 }
             }
         }
-        if (locked != null) {
-            int[] point = LeadArrowRenderer.projectWorldPoint(minecraft, locked, width, height, partialTick);
-            if (point != null) {
-                drawSquare(graphics, point[0], point[1], HALF_SIDE, LOCK_RED);
-            }
+        // The lock square lives in its own class now. It is the one piece of the HUD that has to
+        // outlive any change to how a round is fired, so it is called rather than inlined.
+        boolean framed = SeekerLockFrame.draw(graphics, minecraft, locked, searching,
+                                              showGround && !showAircraft, partialTick);
+        if (diagnosticFrameTick != minecraft.level.getGameTime() / 20L) {
+            diagnosticFrameTick = minecraft.level.getGameTime() / 20L;
+            FireControlCompat.LOGGER.info(
+                "ir-seeker frame: stage={} target={} rack={} drawn={} suppressed-by-flight={}",
+                locked != null ? "locked" : (searching ? "search" : "lost"),
+                locked == null ? "-" : String.format(java.util.Locale.ROOT, "%.2f/%.2f/%.2f",
+                    locked.x, locked.y, locked.z),
+                SeekerHudPayload.launchOrigin() == null ? "-" : "bound",
+                framed, suppressedByFlight);
         }
         Map<UUID, Vec3> targets = MissileTrackPayload.freshTargets(minecraft.level.getGameTime());
         if (targets.isEmpty()) {
@@ -119,6 +131,9 @@ public final class MissileTrackHud {
             drawSquare(graphics, point[0], point[1], HALF_SIDE, LOCK_RED);
         }
     }
+
+    /** The last second the frame line was printed for, so it is a once-a-second line. */
+    private static long diagnosticFrameTick = Long.MIN_VALUE;
 
     private static boolean hasInFlightInfraredMissile(Minecraft minecraft) {
         for (Entity entity : minecraft.level.entitiesForRendering()) {

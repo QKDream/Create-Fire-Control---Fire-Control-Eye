@@ -122,6 +122,25 @@ public final class PodLinkSwitch {
         return SEAT_VIEW_PORT;
     }
 
+    /**
+     * Says once, at startup, whether the Synaxis seat view port is on and what decided it.
+     *
+     * <p>It was off in the pack and nothing said so: no port was registered, Synaxis never asked for
+     * an angle, and the symptom was identical to a broken API. A gate that silently removes a feature
+     * is worse than the feature being broken, because there is nothing to search for.</p>
+     */
+    public static void reportSeatViewPort() {
+        if (SEAT_VIEW_PORT) {
+            FireControlCompat.LOGGER.info(
+                    "synaxis: seat-view-port enabled - the plant port will be registered");
+        } else {
+            FireControlCompat.LOGGER.warn(
+                    "synaxis: seat-view-port DISABLED by config - no plant port is registered, so"
+                            + " Synaxis will never ask for the view angles. Re-enable with"
+                            + " `seatViewPort=on` in config/firecontrolcompat-pod.txt");
+        }
+    }
+
     /** Reads {@code seatViewPort=off} from the same file; on unless switched off. */
     private static boolean readSeatViewPort() {
         try {

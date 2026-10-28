@@ -43,6 +43,49 @@ public final class IffOwnership {
         }
     }
 
+    /**
+     * The structure an entity stands in <b>now</b>, ignoring any pin.
+     *
+     * <p>The pin answers "which body released this", which is what the marking wants; this answers
+     * "which body is it inside", which is what the same-body exemption compares against. Keeping the
+     * two apart is the whole point: a round that left the hull of body A is still A's, and its
+     * current body is none at all.</p>
+     */
+    public static UUID currentBody(ServerLevel level, Entity entity) {
+        if (level == null || entity == null) {
+            return null;
+        }
+        try {
+            return resolve(level, entity);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * The structure pinned to an entity id, without needing the entity itself.
+     *
+     * <p>The memory is keyed by UUID, but every reader of it went through
+     * {@link #subLevelOf(ServerLevel, Entity)}, which needs a live entity. A round that has flown out
+     * of the loaded chunks - or a part whose display entity was unloaded - therefore lost its body
+     * and was answered "unknown" even though the pin was still in the table and still valid. This
+     * asks the table directly.</p>
+     */
+    public static UUID remembered(ServerLevel level, UUID entityId) {
+        if (level == null || entityId == null) {
+            return null;
+        }
+        try {
+            Entry entry = OWNERS.get(entityId);
+            if (entry != null && entry.expiresAt() >= level.getGameTime()) {
+                return entry.subLevel();
+            }
+        } catch (Throwable ignored) {
+            // no clock: treated as not remembered
+        }
+        return null;
+    }
+
     public static UUID subLevelOf(ServerLevel level, Entity entity) {
         if (entity == null) {
             return null;

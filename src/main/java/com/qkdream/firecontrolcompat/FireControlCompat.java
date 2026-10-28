@@ -279,6 +279,7 @@ public final class FireControlCompat {
 
         // this path writes aim origins and view points on a gunner's behalf.
 
+        PodLinkSwitch.reportSeatViewPort();
         if (PodLinkSwitch.seatViewPortEnabled()) {
 
             SynaxisSeatViewPortCompat.register();

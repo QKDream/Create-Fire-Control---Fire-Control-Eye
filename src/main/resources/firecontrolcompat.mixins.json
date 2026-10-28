@@ -52,6 +52,7 @@
     "MianbaoTorpedoLauncherFireMixin",
     "OpticalLockCompatMixin",
     "PodCameraOffsetMixin",
+    "CaptureBufferSourceMixin",
     "LaserSeekerRangeMixin",
     "TaovCbcAmmoMappingMixin",
     "TaovGunInventoryValidationMixin",

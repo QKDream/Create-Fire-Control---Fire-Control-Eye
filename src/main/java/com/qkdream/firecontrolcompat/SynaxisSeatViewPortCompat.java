@@ -107,17 +107,38 @@ public final class SynaxisSeatViewPortCompat {
     }
 
     public static void register() {
-        BlockEntityType<StabilizerControllerBlockEntity> controllerType =
-                ModBlockEntities.STABILIZER_CONTROLLER.get();
-        PlantPortProviders.register(
-                controllerType,
-                (blockEntity, endpointId, givenName) -> {
-                    if (!(blockEntity instanceof StabilizerControllerBlockEntity controller)) {
-                        return Optional.empty();
-                    }
-                    onProxyAttached(controller);
-                    return Optional.of(new SeatViewPlantPort(controller, endpointId, givenName));
-                });
+        try {
+            BlockEntityType<StabilizerControllerBlockEntity> controllerType =
+                    ModBlockEntities.STABILIZER_CONTROLLER.get();
+            if (controllerType == null) {
+                FireControlCompat.LOGGER.warn(
+                        "synaxis: controller block entity type not registered yet - the plant port"
+                                + " was NOT installed");
+                return;
+            }
+            PlantPortProviders.register(
+                    controllerType,
+                    (blockEntity, endpointId, givenName) -> {
+                        if (!(blockEntity instanceof StabilizerControllerBlockEntity controller)) {
+                            return Optional.empty();
+                        }
+                        FireControlCompat.LOGGER.info(
+                                "synaxis: port created controller={} endpoint={} name={}",
+                                controller.getBlockPos(), endpointId, givenName);
+                        onProxyAttached(controller);
+                        return Optional.of(new SeatViewPlantPort(controller, endpointId, givenName));
+                    });
+            FireControlCompat.LOGGER.info(
+                    "synaxis: plant port provider registered for {} (a proxy placed against a"
+                            + " computer will now pull view_yaw / view_pitch)",
+                    controllerType);
+        } catch (Throwable t) {
+            // The API was found (the class resolved, since this method is in it) but the registration
+            // itself failed. Named, not swallowed: an install without the port has no other symptom.
+            FireControlCompat.LOGGER.warn(
+                    "synaxis: plant port registration FAILED api-mismatch:{}:{}",
+                    t.getClass().getSimpleName(), t.getMessage());
+        }
     }
 
     private static void onProxyAttached(StabilizerControllerBlockEntity controller) {
@@ -235,13 +256,49 @@ public final class SynaxisSeatViewPortCompat {
         if (level.getServer() == null) {
             return null;
         }
+        ServerPlayer proximity = null;
         for (ServerPlayer player : level.getServer().getPlayerList().getPlayers()) {
             if (controller.isSeat(player.getVehicle())) {
                 return player;
             }
+            // A gunner seated on a Sable sub-level seat is a passenger of the SEAT ENTITY, which is
+            // not the controller's own seat block: isSeat(getVehicle()) then answers false and the
+            // sample is never taken, so the angles stay frozen while somebody is clearly sitting
+            // there. The fallback accepts a passenger within two blocks of the controller, and the
+            // log line says which route matched so the pack's real relationship can be seen.
+            if (proximity == null && player.isPassenger()) {
+                net.minecraft.world.phys.Vec3 centre =
+                        net.minecraft.world.phys.Vec3.atCenterOf(controller.getBlockPos());
+                if (player.position().distanceToSqr(centre) <= 6.25D) {
+                    proximity = player;
+                }
+            }
+        }
+        if (proximity != null && reportSeat(controller, proximity, "proximity")) {
+            return proximity;
         }
         return null;
     }
+
+    /** Says which route matched, once a second, so "nobody seated" can be told from "wrong check". */
+    private static boolean reportSeat(StabilizerControllerBlockEntity controller, ServerPlayer player,
+                                      String via) {
+        long now = System.currentTimeMillis();
+        Long last = SYNAXIS_SEAT_LOG.get(controller.getBlockPos().asLong());
+        if (last != null && now - last < 1000L) {
+            return true;
+        }
+        SYNAXIS_SEAT_LOG.put(controller.getBlockPos().asLong(), now);
+        FireControlCompat.LOGGER.info("synaxis: sample seated={} via={} vehicle={} controller={}",
+                player.getUUID(), via,
+                player.getVehicle() == null ? "-" : player.getVehicle().getClass().getSimpleName(),
+                controller.getBlockPos());
+        return true;
+    }
+
+    /** Last second each controller reported its seated gunner for. */
+    private static final java.util.Map<Long, Long> SYNAXIS_SEAT_LOG =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     private static SeatViewSample sample(StabilizerControllerBlockEntity controller) {
         Level level = controller.getLevel();
@@ -343,6 +400,43 @@ public final class SynaxisSeatViewPortCompat {
                 frame,
                 sample.lockFrameAngleWorld,
                 sample.lockFrameAngleLocal);
+    }
+
+    /** The last second each controller+port was reported for. */
+    private static final java.util.Map<String, Long> SYNAXIS_READ_LOG = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * One line per second per port, naming what was handed to Synaxis.
+     *
+     * <p>`sent=true` with `reason=fresh` is the healthy answer: Synaxis asked this tick and got the
+     * gunner's current angles. `reason=held-last` means it asked but nobody is seated, so the value is
+     * the last one sampled - the angle will not follow the view, which is the difference between "the
+     * output stopped" and "the seat is empty". `reason=no-controller` or `api-mismatch:` are faults on
+     * our side.</p>
+     */
+    private static void reportSynaxisRead(StabilizerControllerBlockEntity controller, String port,
+                                          SignalValue value, boolean sent, String reason) {
+        try {
+            BlockPos pos = controller.getBlockPos();
+            String key = pos.asLong() + "/" + port;
+            long now = System.currentTimeMillis();
+            Long last = SYNAXIS_READ_LOG.get(key);
+            if (last != null && now - last < 1000L) {
+                return;
+            }
+            SYNAXIS_READ_LOG.put(key, now);
+            double degrees = Double.NaN;
+            if (value instanceof SignalValue.Real real) {
+                degrees = Math.toDegrees(real.value());
+            }
+            FireControlCompat.LOGGER.info(
+                    "synaxis: controller={} port={} angle={} sent={} reason={} thread={}",
+                    pos, port,
+                    Double.isFinite(degrees) ? String.format(Locale.ROOT, "%.2f", degrees) : "-",
+                    sent, reason, Thread.currentThread().getName());
+        } catch (Throwable ignored) {
+            // a diagnostic line is never worth a crash
+        }
     }
 
     private static void debugLog(
@@ -1712,14 +1806,31 @@ public final class SynaxisSeatViewPortCompat {
 
         @Override
         public SignalValue readOutput(String port) {
-            SeatViewSample sample = sample(this.controller);
-            return switch (port) {
-                case "view_yaw" -> new SignalValue.Real(sample.yawRadians);
-                case "view_pitch" -> new SignalValue.Real(sample.pitchRadians);
-                case "raw_yaw" -> new SignalValue.Real(sample.rawYawRadians);
-                case "raw_pitch" -> new SignalValue.Real(sample.rawPitchRadians);
-                default -> null;
-            };
+            try {
+                SeatViewSample sample = sample(this.controller);
+                SignalValue value = switch (port) {
+                    case "view_yaw" -> new SignalValue.Real(sample.yawRadians);
+                    case "view_pitch" -> new SignalValue.Real(sample.pitchRadians);
+                    case "raw_yaw" -> new SignalValue.Real(sample.rawYawRadians);
+                    case "raw_pitch" -> new SignalValue.Real(sample.rawPitchRadians);
+                    default -> null;
+                };
+                Level level = this.controller.getLevel();
+                long now = level == null ? -1L : level.getGameTime();
+                boolean fresh = now >= 0L && sample.sampledTick == now;
+                String reason = value == null ? "unknown-port"
+                        : level == null ? "no-controller"
+                        : fresh ? "fresh" : "held-last";
+                reportSynaxisRead(this.controller, port, value, value != null && level != null, reason);
+                return value;
+            } catch (Throwable t) {
+                // A Synaxis build whose SignalValue or sample shape moved must not take the export of
+                // angles down silently: name it once a second and answer nothing, which is what the
+                // old code did when it threw - except that the reason is now in the log.
+                reportSynaxisRead(this.controller, port, null, false,
+                        "api-mismatch:" + t.getClass().getSimpleName() + ":" + t.getMessage());
+                return null;
+            }
         }
     }
 }

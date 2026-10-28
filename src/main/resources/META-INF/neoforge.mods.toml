@@ -28,11 +28,11 @@ authors="qkdream"
 
 [[dependencies.firecontrolcompat]]
     modId="create_fire_control"
-  # Lower bound is 0.9.4: everything below it lacks the 0.9.4 API this build relies on
-  # (mathematical missile manager, reworked radar HUD, split aircraft/ground weapon types).
+  # No version bound: any fire control build is accepted, so the pack can be tested against
+  # 0.9.x and 1.0.x alike. Re-add a bound once the target line is fixed again.
   # No upper bound on purpose - the 1.0.x line was audited member by member
   # (_work/audit_compat_100.py, _work/fc_094_vs_100.txt) and keeps every symbol we touch.
-    versionRange="[0.9.4,)"
+    versionRange="[0.1.0,)"
     ordering="AFTER"
     side="BOTH"
 

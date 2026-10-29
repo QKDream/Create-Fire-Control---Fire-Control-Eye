@@ -577,17 +577,22 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
 
         this.broadcastRemoteState();
         this.broadcastTrackState();
+        // Where the two heavy anti-air rounds are, what fire control's seeker thinks they are
+        // flying at, and in which space each end is expressed. Silent for every other round.
+        com.qkdream.firecontrolcompat.HeavyAaNav.report(this);
 
         this.firecontrolcompat$accumulateFlight();
         Vec3 to = this.position();
         Vec3 from = this.firecontrolcompat$fuzeFrom(to);
         this.lastFuzePosition = to;
-        if (!this.firecontrolcompat$armed()) {
-            // Safety fuse: inside the arming run the fuze is cold, so nothing can be detonated -
-            // not the hull the round just left, not the rounds on the neighbouring pylons, not the
-            // ground within forty blocks of the rail.
-            reportSafetyFuse(this, "fuse");
-        } else {
+        // Safety fuse: inside the arming run the fuze is cold, so nothing can be detonated - not the
+        // hull the round just left, not the rounds on the neighbouring pylons, not the ground within
+        // forty blocks of the rail. The line is printed on BOTH sides of the flip: it used to be
+        // emitted only while the fuse was still cold, so "the arming run is over" was the one state
+        // the log could never show, and a round that never armed looked exactly like one that did.
+        boolean safetyArmed = this.firecontrolcompat$armed();
+        reportSafetyFuse(this, safetyArmed ? "armed" : "fuse");
+        if (safetyArmed) {
             Vec3 armedFrom = this.stillOnLauncher() ? null : this.clipSegmentPastArmDistance(from, to);
             if (armedFrom != null) {
                 ProximityHit hit = this.findProximityTarget(armedFrom, to);
@@ -646,7 +651,23 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
 
         // The pack's advance applies its own drag each tick, so the ramp has to be re-asserted
         // here or the round coasts down instead of accelerating to its top speed.
-        if (this.sustainsCruiseSpeed() || engine <= ACCEL_TICKS) {
+        //
+        // ...but only for a round nobody else is flying. Fire control's own air-defense guidance
+        // (MianbaoAirDefenseGuidanceHandler) drives an adopted round with
+        // `velocity = flightDirection * speedAtAge()`, where speedAtAge comes from its
+        // SpeedProfile(launchSpeed, 34.03, 200) - and its turn allowance is
+        // `13 deg * speedAtAge / 34.03` (MianbaoAirDefenseCompat.maxTurnRadians). Both numbers come
+        // from the same schedule, so the pair describes a turn radius of 34.03 / (13 deg) = 150
+        // blocks. Re-asserting this class's own ramp on top of that breaks the pair: the round then
+        // flies 2-4x faster than the schedule the turn law was derived for, which multiplies the
+        // turn radius by the same factor (340-385 blocks at ages 20-40 instead of 150). A heavy
+        // round launched from a ship at a contact 150-200 blocks away then physically cannot come
+        // round onto it: it climbs, sails past and buries itself in the ground, which is exactly the
+        // reported "the heavy anti-air missile does not hit anything on a Sable structure".
+        // tick() has always had this guard; mathTick() was written without it, so the two flights
+        // of the same round disagreed. See _work/sim_heavy_aa.py for the numbers.
+        if (!this.fireControlAirDefenseGuided()
+                && (this.sustainsCruiseSpeed() || engine <= ACCEL_TICKS)) {
             double desired = this.accelerationTargetSpeed(engine);
             Vec3 velocity = this.getDeltaMovement();
             double speed = velocity.length();
@@ -664,6 +685,10 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         }
         this.traceGuidance(point, engine);
         this.firecontrolcompat$faceVelocity();
+        // Same line as the entity path (see tick()): the mathematical tick is the only tick a
+        // captured heavy round has, so without this call the two rounds the user reports on would
+        // have no navigation readout at all in a mathematical session.
+        com.qkdream.firecontrolcompat.HeavyAaNav.report(this);
 
         Vec3 to = this.position();
         this.lastPlannedStep = this.getDeltaMovement().length();
@@ -673,9 +698,10 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         this.firecontrolcompat$accumulateFlight();
         Vec3 from = this.firecontrolcompat$fuzeFrom(to);
         this.lastFuzePosition = to;
-        if (!this.firecontrolcompat$armed()) {
-            reportSafetyFuse(this, "fuse");
-        } else {
+        // Same both-sides report as tick() (see the comment there).
+        boolean safetyArmed = this.firecontrolcompat$armed();
+        reportSafetyFuse(this, safetyArmed ? "armed" : "fuse");
+        if (safetyArmed) {
             Vec3 armedFrom = this.stillOnLauncher() ? null : this.clipSegmentPastArmDistance(from, to);
             if (armedFrom != null) {
                 ProximityHit hit = this.findProximityTarget(armedFrom, to);
@@ -1534,7 +1560,23 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
             return null;
         }
         try {
-            ServerSubLevelContainer container = SubLevelContainer.getContainer(serverLevel);
+            // The structures are filed under the *main* level's container even when this round is
+            // still sitting in a plot (its own level is the plot's, and a plot's container is not
+            // the question we want to ask). Ask the root first, then fall back to the round's own
+            // level so nothing changes when there is no sub-level at all.
+            ServerSubLevelContainer container = null;
+            try {
+                ServerLevel root = com.hooya.stabilizedturret.content.controller.MianbaoMissileCompat
+                        .getRootServerLevel(this);
+                if (root != null) {
+                    container = SubLevelContainer.getContainer(root);
+                }
+            } catch (Throwable ignored) {
+                container = null;
+            }
+            if (container == null) {
+                container = SubLevelContainer.getContainer(serverLevel);
+            }
             if (container == null) {
                 return null;
             }
@@ -1569,26 +1611,47 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         // range never fetches a contact that far out, so the bonus could only ever
         // apply along the flight path and never across it - which is exactly the
         // merge it was written for.
+        //
+        // The scan runs over every level the round could be sharing with a contact (see
+        // HeavyAaNav#fuzeLevels): a round that fire control's mathematical flight has moved out
+        // lives in the main level, a round still inside a structure's plot lives in the plot, and
+        // Level#getEntities only ever answers for the level it was asked about. Looking in one of
+        // them is why a structure contact could sit inside the fuze bubble and never be seen.
         AABB searchBox = new AABB(segStart, segEnd)
                 .inflate(Math.max(this.proximityRadius + FUSE_SPEED_BONUS_MAX, 4.0));
         double bestAlongSqr = Double.MAX_VALUE;
         Vec3 bestPosition = null;
-        for (Entity entity : this.level().getEntities(this, searchBox, e -> e != this && !e.isRemoved())) {
-            // RETIRED(ir-arm-rounds): only the ground infrared round is ours to ignore a fuse for.
-            if (entity.getType() == BeamMissileRegistry.INFRARED_TANSHE.get()
-                    || !this.countsAsFuseEntity(entity)) {
+        java.util.Set<Entity> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (net.minecraft.world.level.Level level : com.qkdream.firecontrolcompat.HeavyAaNav.fuzeLevels(this)) {
+            if (level == null) {
                 continue;
             }
-            Vec3 missileEnd = entity.position();
-            Vec3 missileStart = missileEnd.subtract(entity.getDeltaMovement());
-            Vec3 closestOnShell = closestPointBetweenSegments(segStart, segEnd, missileStart, missileEnd);
-            Vec3 closestOnMissile = closestPointOnSegment(missileStart, missileEnd, closestOnShell);
-            double radius = this.proximityRadiusFor(this.relativeSpeed(entity.getDeltaMovement()));
-            if (closestOnShell.distanceToSqr(closestOnMissile) <= radius * radius) {
-                double alongSqr = closestOnShell.distanceToSqr(segStart);
-                if (alongSqr < bestAlongSqr) {
-                    bestAlongSqr = alongSqr;
-                    bestPosition = closestOnShell;
+            java.util.List<Entity> candidates;
+            try {
+                candidates = level.getEntities(this, searchBox, e -> e != this && !e.isRemoved());
+            } catch (Throwable ignored) {
+                continue;
+            }
+            for (Entity entity : candidates) {
+                if (!seen.add(entity)) {
+                    continue;
+                }
+                // RETIRED(ir-arm-rounds): only the ground infrared round is ours to ignore a fuse for.
+                if (entity.getType() == BeamMissileRegistry.INFRARED_TANSHE.get()
+                        || !this.countsAsFuseEntity(entity)) {
+                    continue;
+                }
+                Vec3 missileEnd = entity.position();
+                Vec3 missileStart = missileEnd.subtract(entity.getDeltaMovement());
+                Vec3 closestOnShell = closestPointBetweenSegments(segStart, segEnd, missileStart, missileEnd);
+                Vec3 closestOnMissile = closestPointOnSegment(missileStart, missileEnd, closestOnShell);
+                double radius = this.proximityRadiusFor(this.relativeSpeed(entity.getDeltaMovement()));
+                if (closestOnShell.distanceToSqr(closestOnMissile) <= radius * radius) {
+                    double alongSqr = closestOnShell.distanceToSqr(segStart);
+                    if (alongSqr < bestAlongSqr) {
+                        bestAlongSqr = alongSqr;
+                        bestPosition = closestOnShell;
+                    }
                 }
             }
         }

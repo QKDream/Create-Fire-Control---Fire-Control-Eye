@@ -1,6 +1,7 @@
 package com.qkdream.firecontrolcompat.mixin;
 
 import com.hooya.stabilizedturret.content.controller.FireControlWeaponInputs;
+import com.qkdream.firecontrolcompat.AaWeaponSlots;
 import com.qkdream.firecontrolcompat.FireControlCompat;
 import com.qkdream.firecontrolcompat.network.SeekerHudPayload;
 import net.minecraft.network.chat.Component;
@@ -46,6 +47,13 @@ public abstract class GroundWeaponLabelMixin {
     private void firecontrolcompat$atgmName(CallbackInfoReturnable<Component> cir) {
         try {
             if ((Object) this != FireControlWeaponInputs.GroundWeapon.ANTI_TANK) {
+                // The two anti-air slots are named after the launcher family, not after the round
+                // (weapon.create_fire_control.ground.air_defense = 防空导弹 / high_speed_air_defense
+                // = 高速防空导弹). Both of them answer to several rounds now - the pack's own
+                // portableantiairmissile_2, this mod's infrared round, the heavy 48N6 in the silo and
+                // the placed 涅瓦 block - so the slot name has to say which one the key press
+                // selected, or the operator cannot tell a heavy shot from a high-speed one.
+                firecontrolcompat$aaName(cir);
                 return;
             }
             String stock = cir.getReturnValue() == null ? "-" : cir.getReturnValue().getString();
@@ -60,6 +68,30 @@ public abstract class GroundWeaponLabelMixin {
             }
             firecontrolcompat$report(name, "atgm", stock);
             cir.setReturnValue(Component.literal(name));
+        } catch (Throwable ignored) {
+            // Keep the pack's own wording.
+        }
+    }
+
+    /**
+     * Names an anti-air slot after the round kind the operator selected.
+     *
+     * <p>The name comes from {@link AaWeaponSlots#recent()}, the last kind any computer selected -
+     * there is no block entity and no payload to ask inside this enum method. When nothing has been
+     * selected recently the pack's own wording is left in place, so a computer that never used the
+     * kind selection looks exactly as it did before.</p>
+     */
+    private void firecontrolcompat$aaName(CallbackInfoReturnable<Component> cir) {
+        try {
+            FireControlWeaponInputs.GroundWeapon self = (FireControlWeaponInputs.GroundWeapon) (Object) this;
+            String stock = cir.getReturnValue() == null ? "-" : cir.getReturnValue().getString();
+            AaWeaponSlots.Kind kind = AaWeaponSlots.recent();
+            if (kind == null || kind.family() != self) {
+                AaWeaponSlots.logLabel(self.name().toLowerCase(java.util.Locale.ROOT), null, "native", stock);
+                return;
+            }
+            AaWeaponSlots.logLabel(self.name().toLowerCase(java.util.Locale.ROOT), kind, "kind", stock);
+            cir.setReturnValue(Component.literal(kind.label()));
         } catch (Throwable ignored) {
             // Keep the pack's own wording.
         }

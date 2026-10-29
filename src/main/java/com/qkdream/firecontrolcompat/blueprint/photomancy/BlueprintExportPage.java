@@ -7,6 +7,8 @@ import com.lowdragmc.lowdraglib2.gui.ui.elements.Label;
 import com.lowdragmc.lowdraglib2.gui.ui.elements.ScrollerView;
 import com.qkdream.firecontrolcompat.blueprint.BlueprintBake;
 import com.qkdream.firecontrolcompat.blueprint.BlueprintExporter;
+import com.qkdream.firecontrolcompat.blueprint.RegionExport;
+import com.qkdream.firecontrolcompat.blueprint.RegionSelection;
 import dev.rew1nd.sableschematicapi.tool.client.session.BlueprintToolClientSession;
 import dev.rew1nd.sableschematicapi.tool.client.storage.BlueprintToolLocalFiles;
 import dev.rew1nd.sableschematicapi.tool.ui.BlueprintToolUiKit;
@@ -36,6 +38,18 @@ import java.util.List;
  */
 public final class BlueprintExportPage {
 
+    /** The hover text of the primary button. */
+    private static final String REGION_TOOLTIP =
+        "用蓝图工具（或 /sableexport select 左键两次）划好选区后点击，导出为 OBJ（含子关卡/实体）";
+
+    /** What a player who never drew a selection is told. */
+    private static final String NO_SELECTION =
+        "请先用蓝图工具或 /sableexport select 划出选区";
+
+    /** The name stem a region export gets when the player did not type one. */
+    private static final java.time.format.DateTimeFormatter REGION_STAMP =
+        java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
+
     private BlueprintExportPage() {}
 
     public static UIElement create(Player player) {
@@ -51,6 +65,21 @@ public final class BlueprintExportPage {
                 layout.alignItems(AlignItems.CENTER);
                 layout.gapAll(4.0F);
             });
+
+        // TEMP-DISABLED(blueprint-export): the saved-blueprint buttons only exist while the config
+        // switch is on, so the page can not offer a path that has been turned off.
+        boolean blueprintEnabled = BlueprintBake.blueprintExportEnabled();
+
+        // The primary action, first in the row where the .nbt export used to start: it reads the
+        // live world, so it is the export that produces the tracks, bearings and textures the saved
+        // file cannot carry.
+        Button exportRegion = BlueprintToolUiKit.textButton(Component.literal("选区导出"));
+        exportRegion.layout(layout -> {
+            layout.width(88.0F);
+            layout.height(16.0F);
+        });
+        exportRegion.style(style -> style.tooltips(Component.literal(REGION_TOOLTIP)));
+        exportRegion.setOnClick(event -> exportRegion(player));
 
         Button exportOne = BlueprintToolUiKit.iconButton(
             com.lowdragmc.lowdraglib2.gui.texture.Icons.EXPORT,
@@ -83,17 +112,62 @@ public final class BlueprintExportPage {
             layout.height(16.0F);
             layout.flexDirection(FlexDirection.ROW);
             layout.gapAll(4.0F);
-        }).addChildren(exportOne, exportAll, reveal);
+        });
+        toolbar.addChildren(exportRegion);
+        if (blueprintEnabled) {
+            toolbar.addChildren(exportOne, exportAll);
+        }
+        toolbar.addChildren(reveal);
+
+        // With the .nbt path off there is nothing for a blueprint list to feed, so the space it
+        // took goes to the hint that names the gesture which does work.
+        UIElement body = blueprintEnabled
+            ? BlueprintList.create(player, 360.0F, 132.0F)
+            : disabledNotice();
 
         page.addChildren(
             BlueprintToolUiKit.modeHeader(component("mode.export")),
             toolbar,
             BlueprintToolUiKit.boundLabel(BlueprintToolClientSession::selectionLabel),
-            BlueprintList.create(player, 360.0F, 132.0F),
+            body,
             BlueprintToolUiKit.boundLabel(BlueprintToolClientSession::status),
             hint()
         );
         return page;
+    }
+
+    /**
+     * What takes the blueprint list's place while the saved-blueprint path is off.
+     *
+     * <p>Short lines rather than {@link BlueprintExporter#DISABLED_TEXT} in one piece: this page is
+     * 360 wide, and a label does not wrap, so the sentence is split where it would otherwise run
+     * past the edge. The wording is the command's - the same order, the same words - only broken.
+     */
+    private static UIElement disabledNotice() {
+        UIElement notice = new UIElement().layout(layout -> {
+            layout.width(360.0F);
+            layout.height(132.0F);
+            layout.flexDirection(FlexDirection.COLUMN);
+            layout.alignItems(AlignItems.CENTER);
+            layout.gapAll(4.0F);
+        });
+        notice.addChildren(
+            line("本地蓝图导出已停用", net.minecraft.ChatFormatting.RED),
+            line("请用 /sableexport select 划选区", net.minecraft.ChatFormatting.GRAY),
+            line("再点下方「选区导出」按钮", net.minecraft.ChatFormatting.GRAY),
+            line("（/sableexport region <名字> 效果相同）", net.minecraft.ChatFormatting.DARK_GRAY));
+        return notice;
+    }
+
+    /** One centred, wrapped line of the notice. */
+    private static Label line(String text, net.minecraft.ChatFormatting colour) {
+        Label label = BlueprintToolUiKit.bareLabel(Horizontal.CENTER);
+        label.setText(Component.literal(text).withStyle(colour));
+        label.layout(layout -> {
+            layout.width(352.0F);
+            layout.height(20.0F);
+        });
+        return label;
     }
 
     private static Label hint() {
@@ -112,7 +186,45 @@ public final class BlueprintExportPage {
 
     // ----------------------------------------------------------------- actions
 
+    /**
+     * Exports the region the player drew with the blueprint tool, through {@link RegionExport#run}.
+     *
+     * <p>The tool is where the selection comes from in the first place, so this page is the most
+     * natural place to spend it: the player drew the box while holding this item, and the button is
+     * one click away from the list they were about to use.
+     */
+    private static void exportRegion(Player player) {
+        if (RegionSelection.read() == null) {
+            // Shorter than RegionExport's own refusal on purpose: that one names the full
+            // two-left-click gesture for a typed command, this one is read next to the button.
+            BlueprintExporter.LOGGER.info("region: refused reason=no-selection by=gui");
+            message(player, ChatFormatting.RED, NO_SELECTION);
+            return;
+        }
+        // Close first, like the saved-blueprint path: the bake needs baked models and therefore
+        // blocks the render thread, so the page must not sit frozen over it.
+        net.minecraft.client.Minecraft.getInstance().setScreen(null);
+        String name = "region_" + java.time.LocalDateTime.now().format(REGION_STAMP);
+        int result;
+        try {
+            result = RegionExport.run(BlueprintExporter.chatSource("选区导出"), name);
+        } catch (Throwable t) {
+            BlueprintExporter.LOGGER.error("region export from the blueprint tool page failed", t);
+            message(player, ChatFormatting.RED, "选区导出失败：" + t);
+            result = 0;
+        }
+        BlueprintExporter.LOGGER.info("region export: source=gui-page name={} result={}",
+            name, result);
+    }
+
     private static void exportSelected(Player player) {
+        // TEMP-DISABLED(blueprint-export): the button is not created while the switch is off; this
+        // guard covers a config value changed under a page that is already open.
+        if (!BlueprintBake.blueprintExportEnabled()) {
+            BlueprintExporter.logBlueprintExportDisabled("gui");
+            message(player, ChatFormatting.RED, BlueprintExporter.DISABLED_TEXT);
+            return;
+        }
         BlueprintToolLocalFiles.Entry entry = BlueprintToolClientSession.selectedBlueprint();
         if (entry == null) {
             BlueprintToolClientSession.setStatusKey("select_file");
@@ -123,6 +235,11 @@ public final class BlueprintExportPage {
     }
 
     private static void exportAll(Player player) {
+        if (!BlueprintBake.blueprintExportEnabled()) {
+            BlueprintExporter.logBlueprintExportDisabled("gui");
+            message(player, ChatFormatting.RED, BlueprintExporter.DISABLED_TEXT);
+            return;
+        }
         List<BlueprintToolLocalFiles.Entry> all = BlueprintToolClientSession.localBlueprints();
         if (all.isEmpty()) {
             BlueprintToolClientSession.setStatusKey("no_local_schematics");
@@ -150,6 +267,13 @@ public final class BlueprintExportPage {
      * sit on a frozen UI pretending to still be responsive.
      */
     private static void runExport(Player player, List<BlueprintToolLocalFiles.Entry> entries) {
+        // TEMP-DISABLED(blueprint-export): the funnel both .nbt buttons go through, so the gate is
+        // here as well as on the buttons themselves - no caller reaches the bake past it.
+        if (!BlueprintBake.blueprintExportEnabled()) {
+            BlueprintExporter.logBlueprintExportDisabled("gui");
+            message(player, ChatFormatting.RED, BlueprintExporter.DISABLED_TEXT);
+            return;
+        }
         net.minecraft.client.Minecraft.getInstance().setScreen(null);
 
         int ok = 0;

@@ -207,7 +207,16 @@ public final class FireControlCompatMixinPlugin implements IMixinConfigPlugin {
      * only be attached where there is a frame being drawn.
      */
     private static final Set<String> CLIENT_ONLY_MIXINS = Set.of(
-            "GuidedMunitionRenderMixin");
+            "GuidedMunitionRenderMixin",
+            // EntityRenderDispatcher does not exist on a dedicated server, so the capture's
+            // per-entity scope may only be attached where there is a frame being drawn.
+            "CaptureScopeEntityMixin",
+            // Same reason, plus the capture's second door: BlockEntityRenderDispatcher and
+            // MultiBufferSource are client classes. Both are gated here rather than moved between
+            // the config's lists, so a dedicated server skips them instead of failing to resolve a
+            // class that does not exist there.
+            "CaptureBlockEntityMixin",
+            "CaptureBufferSourceMixin");
 
     /** The modelling blocks only exist with the modelling mod. */
     private static final Set<String> YUUSHYA_MIXINS = Set.of(
@@ -396,8 +405,26 @@ public final class FireControlCompatMixinPlugin implements IMixinConfigPlugin {
             LOGGER.info("[firecontrolcompat] EMP blackout hooked into {}", targetClassName);
         } else if (SONIC_MIXIN_MODS.containsKey(name)) {
             LOGGER.info("[firecontrolcompat] vibration hook heard by {}", targetClassName);
+        } else if (CAPTURE_MIXINS.contains(name)) {
+            // Hard evidence that the capture's hook is inside the class, printed at class-load: this
+            // is the line that was missing when a capture window recorded nothing and every guess
+            // ("the hook is not applied" vs "nothing was drawn through it") fitted the same log.
+            LOGGER.info("[firecontrolcompat] capture-hook: mixin applied mixin={} target={} methods={}",
+                    name, targetClassName, targetClass.methods.size());
         }
     }
+
+    /**
+     * The three hooks that make the frame capture possible.
+     *
+     * <p>Their application is reported through {@code capture-hook: mixin applied} at class-load and
+     * re-checked at arm time by {@code CaptureHooks} (reflection over the injected handler names), so
+     * "the hook is not there" is a statement about the loaded classes and not about the config.</p>
+     */
+    private static final Set<String> CAPTURE_MIXINS = Set.of(
+            "CaptureBufferSourceMixin",
+            "CaptureScopeEntityMixin",
+            "CaptureBlockEntityMixin");
 
     private static Boolean clientSide;
 

@@ -129,6 +129,8 @@
     "ThirdPersonAimHudLockLabelMixin",
     "FireControlTrailPathMixin",
     "GuidedMunitionRenderMixin",
+    "CaptureScopeEntityMixin",
+    "CaptureBlockEntityMixin",
     "ControllerSonarMixin",
     "WeaponSlotLabelMixin",
     "AircraftWeaponTypeLabelMixin",

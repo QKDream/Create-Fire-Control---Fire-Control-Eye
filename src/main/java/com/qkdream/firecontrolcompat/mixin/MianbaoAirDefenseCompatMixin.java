@@ -265,6 +265,37 @@ public abstract class MianbaoAirDefenseCompatMixin {
         }
         FireControlCompat.LOGGER.info("[firecontrolcompat] aa-fireone: ok={} ref={}",
                 ok, ref == null ? "-" : ref.pos());
+        firecontrolcompat$kindJudgement(level, ref, computer, ok);
+    }
+
+    /**
+     * The one line that says whether the round that went out is the kind the operator selected.
+     *
+     * <p>Emitted for every {@code fireOne} call, whether this mod's filtered walk released it or
+     * the pack's own walk did, so "the heavy fired while 普通防空 was selected" can no longer be a
+     * matter of opinion: {@code matches-selected=false} with a non-{@code none} {@code selected} is
+     * exactly that fault, and {@code selected=none} means the operator never chose a kind (the
+     * pack's own behaviour is then in force and nothing was overridden).</p>
+     */
+    private static void firecontrolcompat$kindJudgement(Level level, BindingRef ref,
+            StabilizerControllerBlockEntity computer, boolean fired) {
+        try {
+            com.qkdream.firecontrolcompat.AaWeaponSlots.Kind railKind =
+                    com.qkdream.firecontrolcompat.AaWeaponSlots.kindOf(level, ref);
+            com.qkdream.firecontrolcompat.AaWeaponSlots.Kind selected =
+                    com.qkdream.firecontrolcompat.AaWeaponSlots.selected(computer);
+            String matches = selected == null ? "unknown"
+                    : (railKind == selected ? "true" : "false");
+            FireControlCompat.LOGGER.info(
+                    "[firecontrolcompat] aa-kind: released={} kind={} selected={} matches-selected={}"
+                            + " fired={} round={}",
+                    ref == null ? "-" : ref.pos(),
+                    railKind == null ? "unknown" : railKind.id(),
+                    selected == null ? "none" : selected.id(), matches, fired,
+                    MianbaoAaFireCompat.roundName(ref == null || level == null ? null : ref.resolve(level)));
+        } catch (Throwable ignored) {
+            // a diagnostic line is never worth a crash
+        }
     }
 
     /** First this many {@code fireOne} calls print unconditionally, then one a second. */

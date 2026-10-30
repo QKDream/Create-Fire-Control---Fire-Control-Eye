@@ -1261,16 +1261,9 @@ public final class BlueprintBake {
                                     BakedModel model, RandomSource random) {
         try {
             var ext = (net.neoforged.neoforge.client.extensions.IBakedModelExtension) model;
-            net.neoforged.neoforge.client.model.data.ModelData modelData =
-                net.neoforged.neoforge.client.model.data.ModelData.EMPTY;
             BlockEntity be = w.getBlockEntity(pos);
-            if (be != null) {
-                try {
-                    modelData = be.getModelData();
-                } catch (Throwable ignored) {
-                    // a block entity that cannot describe itself contributes nothing
-                }
-            }
+            net.neoforged.neoforge.client.model.data.ModelData modelData =
+                modelDataOf(w, pos, state, be);
             modelData = ext.getModelData(w, pos, state, modelData);
             for (RenderType layer : ext.getRenderTypes(state, random, modelData)) {
                 for (Direction d : Direction.values()) {
@@ -1286,6 +1279,544 @@ public final class BlueprintBake {
             // an unreadable model is treated as empty, which sends the block to its shape
         }
         return false;
+    }
+
+    // ------------------------------------------------------- the model data a model is given
+    //
+    // A model that needs parameters gets them from its block entity, and there are TWO routes for
+    // that in NeoForge 1.21.1, not one:
+    //
+    //   * `BlockEntity#getModelData`, which a mod overrides when it wants to answer directly, and
+    //   * `ModelDataManager`, which is what the chunk builder actually reads. The default
+    //     implementation of `getModelData` returns EMPTY (javap on 21.1.228:
+    //     `IBlockEntityExtension.getModelData() { return ModelData.EMPTY; }`), so a mod that only
+    //     calls `requestModelDataUpdate()` - the pattern the NeoForge documentation shows - stores
+    //     its data in that manager and nowhere else.
+    //
+    // Passing only the first is why a parametric model came out as its unparameterised default.
+    // Both are merged here, so whichever route the mod chose reaches `getQuads`.
+
+    /**
+     * Everything the game would tell this model about this block position, merged.
+     *
+     * @param level the level the model is asked about - the export's own adapter, not the real one,
+     *              because that is what {@code IBakedModelExtension#getModelData} is handed by the
+     *              chunk builder and a model may read the block entity back out of it
+     * @param be    the block entity at that position, or null
+     */
+    private static net.neoforged.neoforge.client.model.data.ModelData modelDataOf(
+            net.minecraft.world.level.BlockAndTintGetter level, BlockPos pos, BlockState state,
+            BlockEntity be) {
+        net.neoforged.neoforge.client.model.data.ModelData data =
+            net.neoforged.neoforge.client.model.data.ModelData.EMPTY;
+        // 1) The map the chunk builder reads. Only a client level has one: the default
+        // implementation of `getModelDataManager` returns null, so this costs a virtual call.
+        try {
+            net.minecraft.world.level.Level real = null;
+            if (be != null) {
+                real = be.getLevel();
+            }
+            if (real == null) {
+                real = Minecraft.getInstance().level;
+            }
+            if (real != null) {
+                var manager = real.getModelDataManager();
+                if (manager != null) {
+                    data = mergeModelData(data, manager.getAt(pos));
+                }
+            }
+        } catch (Throwable ignored) {
+            // a position outside the loaded chunks has no model data
+        }
+        // 2) The block entity's own answer, which is what Copycats+ and most NeoForge mods use.
+        if (be != null) {
+            try {
+                data = mergeModelData(data, be.getModelData());
+            } catch (Throwable ignored) {
+                // a block entity that cannot describe itself contributes nothing
+            }
+        }
+        // 3) A render attachment, on the NeoForge versions that have one. See
+        // renderAttachmentModelData for why this is looked up by name.
+        try {
+            data = mergeModelData(data, renderAttachmentModelData(be));
+        } catch (Throwable ignored) {
+            // an attachment that cannot be read is no attachment
+        }
+        return data;
+    }
+
+    /** Both model data sets, as one. Properties in {@code extra} win where they collide. */
+    private static net.neoforged.neoforge.client.model.data.ModelData mergeModelData(
+            net.neoforged.neoforge.client.model.data.ModelData base,
+            net.neoforged.neoforge.client.model.data.ModelData extra) {
+        if (extra == null || extra == net.neoforged.neoforge.client.model.data.ModelData.EMPTY) {
+            return base == null ? net.neoforged.neoforge.client.model.data.ModelData.EMPTY : base;
+        }
+        if (base == null || base == net.neoforged.neoforge.client.model.data.ModelData.EMPTY) {
+            return extra;
+        }
+        try {
+            var builder = net.neoforged.neoforge.client.model.data.ModelData.builder();
+            copyModelData(builder, base);
+            copyModelData(builder, extra);
+            return builder.build();
+        } catch (Throwable ignored) {
+            // ModelData has no merge of its own; if the copy fails the first answer stands.
+            return base;
+        }
+    }
+
+    private static void copyModelData(
+            net.neoforged.neoforge.client.model.data.ModelData.Builder builder,
+            net.neoforged.neoforge.client.model.data.ModelData data) {
+        for (var property : data.getProperties()) {
+            copyModelProperty(builder, data, property);
+        }
+    }
+
+    /** One property, copied without an unchecked cast at the call site. */
+    private static <T> void copyModelProperty(
+            net.neoforged.neoforge.client.model.data.ModelData.Builder builder,
+            net.neoforged.neoforge.client.model.data.ModelData data,
+            net.neoforged.neoforge.client.model.data.ModelProperty<T> property) {
+        T value = data.get(property);
+        if (value != null) {
+            builder.with(property, value);
+        }
+    }
+
+    /**
+     * A block entity's render attachment, as model data, on the versions that have one.
+     *
+     * <p>1.21.1's NeoForge does not: javap on 21.1.228 lists the whole
+     * {@code net.neoforged.neoforge.client.model.data} package as
+     * {@code ModelData}, {@code ModelData$Builder}, {@code ModelDataManager},
+     * {@code ModelProperty} and {@code MultipartModelData} - there is no
+     * {@code RenderAttachmentBlockEntity} and no {@code ModelProperties} to key it with, so a build
+     * against this version cannot name the type at all. The hook is therefore written against the
+     * method and the property <em>by name</em>: a newer NeoForge that has both is served without a
+     * recompile, and this one resolves to EMPTY and does nothing.
+     */
+    private static net.neoforged.neoforge.client.model.data.ModelData renderAttachmentModelData(
+            BlockEntity be) {
+        if (be == null) {
+            return net.neoforged.neoforge.client.model.data.ModelData.EMPTY;
+        }
+        try {
+            java.lang.reflect.Method method;
+            try {
+                method = be.getClass().getMethod("getRenderAttachmentData");
+            } catch (NoSuchMethodException missing) {
+                return net.neoforged.neoforge.client.model.data.ModelData.EMPTY;
+            }
+            Object attachment = method.invoke(be);
+            if (attachment == null) {
+                return net.neoforged.neoforge.client.model.data.ModelData.EMPTY;
+            }
+            var property = renderAttachmentProperty();
+            if (property == null) {
+                // No property to key it with on this version: the data exists and cannot be passed.
+                noteRenderAttachment(be.getClass());
+                return net.neoforged.neoforge.client.model.data.ModelData.EMPTY;
+            }
+            var builder = net.neoforged.neoforge.client.model.data.ModelData.builder();
+            withProperty(builder, property, attachment);
+            return builder.build();
+        } catch (Throwable ignored) {
+            return net.neoforged.neoforge.client.model.data.ModelData.EMPTY;
+        }
+    }
+
+    /** {@code ModelProperties.RENDER_ATTACHMENT}, or null on a NeoForge that has no such thing. */
+    private static net.neoforged.neoforge.client.model.data.ModelProperty<?> renderAttachmentProperty() {
+        if (RENDER_ATTACHMENT_RESOLVED) {
+            return RENDER_ATTACHMENT_PROPERTY;
+        }
+        RENDER_ATTACHMENT_RESOLVED = true;
+        try {
+            Class<?> properties = Class.forName(
+                "net.neoforged.neoforge.client.model.data.ModelProperties");
+            java.lang.reflect.Field field = properties.getField("RENDER_ATTACHMENT");
+            Object value = field.get(null);
+            if (value instanceof net.neoforged.neoforge.client.model.data.ModelProperty<?> found) {
+                RENDER_ATTACHMENT_PROPERTY = found;
+            }
+        } catch (Throwable ignored) {
+            // this NeoForge has no render-attachment property, which is the 1.21.1 case
+        }
+        return RENDER_ATTACHMENT_PROPERTY;
+    }
+
+    private static boolean RENDER_ATTACHMENT_RESOLVED = false;
+    private static net.neoforged.neoforge.client.model.data.ModelProperty<?> RENDER_ATTACHMENT_PROPERTY;
+
+    /** One line per class, so "data exists but cannot be passed" is visible rather than silent. */
+    private static void noteRenderAttachment(Class<?> type) {
+        if (RENDER_ATTACHMENT_NOTE.size() >= 4 || RENDER_ATTACHMENT_NOTE.contains(type.getName())) {
+            return;
+        }
+        RENDER_ATTACHMENT_NOTE.add(type.getName());
+        BlueprintExporter.LOGGER.info(
+            "itemmodel-miss: render-attachment type={} reason=no-ModelProperties.RENDER_ATTACHMENT"
+                + " on this NeoForge",
+            type.getName());
+    }
+
+    private static final java.util.List<String> RENDER_ATTACHMENT_NOTE = new java.util.ArrayList<>();
+
+    /** {@code builder.with(property, value)} where the property's type is a wildcard. */
+    private static <T> void withProperty(
+            net.neoforged.neoforge.client.model.data.ModelData.Builder builder,
+            net.neoforged.neoforge.client.model.data.ModelProperty<T> property, Object value) {
+        if (value == null) {
+            return;
+        }
+        try {
+            builder.with(property, (T) value);
+        } catch (Throwable ignored) {
+            // a value of the wrong type is not this property's value
+        }
+    }
+
+    /**
+     * The names of the properties in a model data set, for the log.
+     *
+     * <p>{@code ModelProperty} carries no name on this version - javap shows a constructor and
+     * {@code test(Object)}, nothing else - so the only name that exists is the static field a mod
+     * declared it in. Those fields are scanned once per class and matched by identity, which is
+     * what turns {@code ModelProperty@1f2e3d} into {@code NeoItemBlockModel.BASE_BLOCK_ENTITY}.
+     */
+    private static String modelDataKeys(Object modelData, BlockEntity be, Class<?> modelClass) {
+        if (modelData == null) {
+            return "-";
+        }
+        try {
+            var data = (net.neoforged.neoforge.client.model.data.ModelData) modelData;
+            var properties = data.getProperties();
+            if (properties == null || properties.isEmpty()) {
+                return "-";
+            }
+            StringBuilder out = new StringBuilder();
+            for (var property : properties) {
+                if (out.length() > 0) {
+                    out.append(',');
+                }
+                out.append(modelPropertyName(property, be, modelClass));
+                if (out.length() > 96) {
+                    out.append(",...");
+                    break;
+                }
+            }
+            return out.length() == 0 ? "-" : out.toString();
+        } catch (Throwable ignored) {
+            return "?";
+        }
+    }
+
+    private static String modelPropertyName(Object property, BlockEntity be, Class<?> modelClass) {
+        try {
+            String text = String.valueOf(property);
+            // The default toString is the only case that carries no information.
+            if (text != null && !text.isEmpty()
+                    && !text.matches(".*@[0-9a-fA-F]{1,8}$")) {
+                return text;
+            }
+        } catch (Throwable ignored) {
+            // fall through to the field scan
+        }
+        String named = modelPropertyFieldName(property, be == null ? null : be.getClass());
+        if (named == null) {
+            named = modelPropertyFieldName(property, modelClass);
+        }
+        if (named != null) {
+            return named;
+        }
+        try {
+            return property.getClass().getSimpleName() + "@"
+                + Integer.toHexString(System.identityHashCode(property));
+        } catch (Throwable ignored) {
+            return "property";
+        }
+    }
+
+    private static final java.util.Map<Class<?>, java.util.Map<Object, String>>
+        MODEL_PROPERTY_NAMES = new java.util.HashMap<>();
+
+    private static String modelPropertyFieldName(Object property, Class<?> owner) {
+        if (property == null || owner == null) {
+            return null;
+        }
+        try {
+            return MODEL_PROPERTY_NAMES.computeIfAbsent(owner, BlueprintBake::scanModelProperties)
+                .get(property);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** Static {@code ModelProperty} fields of a class, by identity, named {@code Type.FIELD}. */
+    private static java.util.Map<Object, String> scanModelProperties(Class<?> owner) {
+        java.util.Map<Object, String> out = new java.util.IdentityHashMap<>();
+        try {
+            for (Class<?> type = owner; type != null && type != Object.class;
+                    type = type.getSuperclass()) {
+                for (var field : type.getDeclaredFields()) {
+                    if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                        continue;
+                    }
+                    if (!net.neoforged.neoforge.client.model.data.ModelProperty.class
+                            .isAssignableFrom(field.getType())) {
+                        continue;
+                    }
+                    try {
+                        field.setAccessible(true);
+                        Object value = field.get(null);
+                        if (value != null) {
+                            out.putIfAbsent(value, type.getSimpleName() + "." + field.getName());
+                        }
+                    } catch (Throwable ignored) {
+                        // a field the module system will not open is simply not named
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // an unreadable class names nothing
+        }
+        return out;
+    }
+
+    // ------------------------------------------------------------- the item model of a block
+    //
+    // A block-modelling mod very often does not draw its block with a block model. The blockstate
+    // is an air stub - measured on Yuushya: `blockstates/itemblock.json` is
+    // `{"variants": {"": {"model": "yuushya:block/blank"}}}` and `blank.json` has no `elements` at
+    // all - and the appearance comes from the item model of the block's own item, or from a model
+    // loader the mod registered. `dispatcher.getBlockModel(state)` then answers a model with no
+    // quads, and the export fell through to the block's VoxelShape: a grey box where the chair was.
+    //
+    // The repair is the route the game takes to draw such an item: ask `ItemRenderer` for the
+    // item's baked model and read its quads. Measured against 1.21.1 so the UVs are not guessed at:
+    // `FaceBakery.fillVertex` stores `sprite.getU(u / 16)`, i.e. a baked quad - block or item - is
+    // in ATLAS space, so the existing sprite conversion applies unchanged. A model that builds its
+    // own quads in code may hand over 0..1 instead; that is detected per quad and kept as it is,
+    // because dividing it by the sprite's span would collapse the whole image into one texel.
+
+    /** How many {@code itemmodel-hit} lines, which are one per distinct id until this is reached. */
+    private static final int ITEMMODEL_HIT_LIMIT = 40;
+
+    private static int ITEMMODEL_HIT_LOGGED = 0;
+
+    /** The baked model of a block's own item, or null when it has none worth borrowing. */
+    private static BakedModel itemModelOf(BlockState state) {
+        try {
+            var item = state.getBlock().asItem();
+            if (item == null || item == net.minecraft.world.item.Items.AIR) {
+                return null;
+            }
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft == null) {
+                return null;
+            }
+            var stack = new net.minecraft.world.item.ItemStack(item);
+            BakedModel model = minecraft.getItemRenderer()
+                .getModel(stack, minecraft.level, minecraft.player, 0);
+            if (model == null || model.isCustomRenderer()) {
+                // `builtin/entity` has no baked quads: a code renderer draws that item, and
+                // there is nothing here to read.
+                return null;
+            }
+            return model;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Whether the item model may stand in for this block at all.
+     *
+     * <p>No when the block owns a renderer: that renderer is the part that decides how the block
+     * looks, the block-entity pass runs it, and adding the item model's quads here would draw the
+     * same block twice - once as its furniture and once as its inventory icon. The one place this
+     * fallback belongs is a block that has no renderer to speak for it.
+     */
+    private static boolean itemModelDrawsBlock(BlockEntity be) {
+        if (be == null) {
+            return true;
+        }
+        try {
+            var dispatcher = Minecraft.getInstance().getBlockEntityRenderDispatcher();
+            return dispatcher == null || dispatcher.getRenderer(be) == null;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** Whether an item model has any quad, asked through the same NeoForge signature. */
+    private static boolean hasItemQuads(BakedModel model, RandomSource random,
+            net.neoforged.neoforge.client.model.data.ModelData modelData) {
+        try {
+            var ext = (net.neoforged.neoforge.client.extensions.IBakedModelExtension) model;
+            if (!ext.getQuads(null, null, random, modelData, null).isEmpty()) {
+                return true;
+            }
+            for (Direction direction : Direction.values()) {
+                if (!ext.getQuads(null, direction, random, modelData, null).isEmpty()) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+            // an item model that will not enumerate behaves as having nothing
+        }
+        return false;
+    }
+
+    /**
+     * The model data a model is asked with: the block's, then the model's own answer.
+     *
+     * <p>The second step is what makes a model that reads its block entity out of the level
+     * produce anything at all - Yuushya's {@code NeoItemBlockModel.getModelData} puts the block
+     * entity into the data and its {@code getQuads} answers an empty list without it - and it is
+     * also what the property names in the {@code itemmodel-miss} line are taken from, so the line
+     * names the keys the model actually saw. The "does it have quads" gate and the draw itself
+     * both go through here, so the two can never disagree.
+     */
+    private static net.neoforged.neoforge.client.model.data.ModelData modelDataForModel(
+            net.minecraft.world.level.BlockAndTintGetter level, BlockPos pos, BlockState state,
+            BlockEntity be, BakedModel model) {
+        var data = modelDataOf(level, pos, state, be);
+        if (model == null) {
+            return data;
+        }
+        try {
+            data = ((net.neoforged.neoforge.client.extensions.IBakedModelExtension) model)
+                .getModelData(level, pos, state, data);
+        } catch (Throwable ignored) {
+            // a model whose own model data cannot be built keeps what the block entity said
+        }
+        return data;
+    }
+
+    /** Every quad of an item model: the general list first, the six directions when it is empty. */
+    private static java.util.List<net.minecraft.client.renderer.block.model.BakedQuad> itemQuads(
+            BakedModel model, RandomSource random,
+            net.neoforged.neoforge.client.model.data.ModelData modelData) {
+        java.util.List<net.minecraft.client.renderer.block.model.BakedQuad> out =
+            new java.util.ArrayList<>();
+        var ext = (net.neoforged.neoforge.client.extensions.IBakedModelExtension) model;
+        try {
+            var general = ext.getQuads(null, null, random, modelData, null);
+            if (general != null && !general.isEmpty()) {
+                out.addAll(general);
+                return out;
+            }
+        } catch (Throwable ignored) {
+            // fall through to the directional lists
+        }
+        for (Direction direction : Direction.values()) {
+            try {
+                var quads = ext.getQuads(null, direction, random, modelData, null);
+                if (quads != null) {
+                    out.addAll(quads);
+                }
+            } catch (Throwable ignored) {
+                // one direction a model cannot answer is not the whole model
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Whether a quad's UVs are the model's own 0..1 rather than atlas coordinates.
+     *
+     * <p>Measured, not assumed: a quad whose four corners all sit inside the sprite's atlas
+     * rectangle is an atlas quad, and one that does not fit there but does sit inside 0..1 came
+     * from a model that built its own vertices. The order matters - an atlas quad of a sprite in
+     * the atlas corner is inside 0..1 as well, so "fits the sprite" has to be asked first.
+     */
+    private static boolean localUvQuad(
+            net.minecraft.client.renderer.block.model.BakedQuad quad,
+            TextureAtlasSprite sprite) {
+        try {
+            if (sprite == null) {
+                return false;
+            }
+            float u0 = sprite.getU0();
+            float u1 = sprite.getU1();
+            float v0 = sprite.getV0();
+            float v1 = sprite.getV1();
+            // A one-texel placeholder is not a sprite to measure against.
+            if (u1 - u0 <= 1.001f / 512f || v1 - v0 <= 1.001f / 512f) {
+                return false;
+            }
+            int[] data = quad.getVertices();
+            int stride = data.length / 4;
+            if (stride < 6) {
+                return false;
+            }
+            boolean insideSprite = true;
+            boolean insideUnit = true;
+            for (int corner = 0; corner < 4; corner++) {
+                int base = corner * stride;
+                float u = Float.intBitsToFloat(data[base + 4]);
+                float v = Float.intBitsToFloat(data[base + 5]);
+                if (u < u0 - 1e-4f || u > u1 + 1e-4f || v < v0 - 1e-4f || v > v1 + 1e-4f) {
+                    insideSprite = false;
+                }
+                if (u < -1e-3f || u > 1.001f || v < -1e-3f || v > 1.001f) {
+                    insideUnit = false;
+                }
+            }
+            return !insideSprite && insideUnit;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Draw a block from its own item's model.
+     *
+     * <p>The last resort before {@link #emitShape}: a block whose block model has no quads, and
+     * whose appearance therefore lives in the item model of the item it drops. Everything else is
+     * the block-model path unchanged - same pose, same offset, same sprite conversion - so a block
+     * drawn here lands where the block is and is textured like any other.
+     */
+    private static int renderItemModelQuads(net.minecraft.world.level.BlockAndTintGetter level,
+                                            BlockEntity be, BlockState state, BlockPos pos,
+                                            PoseStack pose, Collector collector, RandomSource random,
+                                            BakedModel model) {
+        var modelData = modelDataForModel(level, pos, state, be, model);
+        collector.setAtlases(spritesOf(model, null, random, modelData));
+        try {
+            hintRenderType(net.minecraft.client.renderer.ItemBlockRenderTypes.getRenderType(
+                new net.minecraft.world.item.ItemStack(state.getBlock().asItem()), false));
+        } catch (Throwable ignored) {
+            // a block whose item has no sheet keeps the sprite's own layer
+        }
+        java.util.List<net.minecraft.client.renderer.block.model.BakedQuad> quads =
+            itemQuads(model, random, modelData);
+        int emitted = 0;
+        for (var quad : quads) {
+            if (quad == null) {
+                continue;
+            }
+            TextureAtlasSprite sprite = quad.getSprite();
+            boolean local = localUvQuad(quad, sprite);
+            if (sprite != null) {
+                collector.setSprite(sprite);
+            }
+            collector.setUvLocal(local);
+            try {
+                emitQuad(collector, pose, quad);
+                emitted++;
+            } catch (Throwable ignored) {
+                // one bad quad must not lose the rest of the item
+            } finally {
+                collector.setUvLocal(false);
+            }
+        }
+        collector.setUvNeedsAtlasConversion(true);
+        return emitted;
     }
 
     /**
@@ -1404,17 +1935,17 @@ public final class BlueprintBake {
                                          Collector collector, RandomSource random) {
         var ext = (net.neoforged.neoforge.client.extensions.IBakedModelExtension) model;
 
-        // What the block entity contributes, then what the model makes of it.
-        net.neoforged.neoforge.client.model.data.ModelData modelData =
-            net.neoforged.neoforge.client.model.data.ModelData.EMPTY;
+        // What this model contributes against what was there before it, so an empty answer is
+        // distinguishable from an answer that happened to be written over the previous block's.
+        int facesBefore = collector.faces.size();
+
+        // What the block entity contributes, then what the model makes of it. Both routes the
+        // game has for that are merged - see modelDataOf - because a mod that only calls
+        // requestModelDataUpdate() stores its data in the level's ModelDataManager and its
+        // getModelData() stays EMPTY.
         BlockEntity be = w.getBlockEntity(pos);
-        if (be != null) {
-            try {
-                modelData = be.getModelData();
-            } catch (Throwable ignored) {
-                // a block entity that cannot describe itself contributes nothing
-            }
-        }
+        net.neoforged.neoforge.client.model.data.ModelData modelData =
+            modelDataOf(w, pos, state, be);
         modelData = ext.getModelData(w, pos, state, modelData);
 
         collector.setAtlases(spritesOf(model, state, random, modelData));
@@ -1463,6 +1994,36 @@ public final class BlueprintBake {
                 for (net.minecraft.client.renderer.block.model.BakedQuad quad : quads) {
                     collector.setSprite(quad.getSprite());
                     emitQuad(collector, pose, quad);
+                }
+            }
+        }
+
+        // The signature above is the NeoForge one - with ModelData and a render type - and it is
+        // the one every model on this classpath implements, because `BakedModel` extends
+        // `IBakedModelExtension` (javap on 21.1.228: `public interface BakedModel extends
+        // IBakedModelExtension`, whose `getQuads(BlockState, Direction, RandomSource, ModelData,
+        // RenderType)` defaults to the three-argument call). A model bridged in from Fabric can
+        // still be asymmetric: its extension overload empty while the vanilla one holds the quads.
+        // So when the extension answered nothing at all, the vanilla signature is tried once - it
+        // is the same call the game makes, so it can only add geometry that the game would draw.
+        if (collector.faces.size() == facesBefore) {
+            try {
+                hintRenderType(ItemBlockRenderTypes.getRenderType(state, false));
+            } catch (Throwable ignored) {
+                // no sheet to hint at
+            }
+            for (Direction dir : dirs) {
+                try {
+                    for (net.minecraft.client.renderer.block.model.BakedQuad quad
+                            : model.getQuads(state, dir, random)) {
+                        if (quad == null) {
+                            continue;
+                        }
+                        collector.setSprite(quad.getSprite());
+                        emitQuad(collector, pose, quad);
+                    }
+                } catch (Throwable ignored) {
+                    // a direction the vanilla signature cannot answer is not the whole model
                 }
             }
         }
@@ -2099,7 +2660,14 @@ public final class BlueprintBake {
                 + ", selection=" + minX + "," + minY + "," + minZ + ".." + maxX + "," + maxY + "," + maxZ);
         }
 
-        int written = write(collector, name);
+        // The sub-level names go to the writer so the Blender helper can label its collections
+        // `Sable_<name>` instead of `Sable_01`: the object name stays `subNN`, because that is the
+        // stable part of the format, and the name lives only in the helper script.
+        java.util.Map<Integer, String> spaceLabels = new java.util.LinkedHashMap<>();
+        for (RegionSpace space : spaces) {
+            spaceLabels.put(space.index, space.label);
+        }
+        int written = write(collector, name, spaceLabels);
         CaptureScope.summarise();
         BlueprintExporter.LOGGER.info(
             "region: baked blocks={} examined={} quads={} entities={} ber={} materials={} skipped={}"
@@ -2303,6 +2871,7 @@ public final class BlueprintBake {
         /** Block ids already named at least once, so no kind of part is ever silent. */
         private final java.util.Set<String> berKinds = new java.util.LinkedHashSet<>();
         private final java.util.Set<String> blockKinds = new java.util.LinkedHashSet<>();
+        private final java.util.Set<String> itemModelKinds = new java.util.LinkedHashSet<>();
 
         /**
          * Whether this is the first line about a block id, and one more id is still affordable.
@@ -2320,6 +2889,18 @@ public final class BlueprintBake {
         /** The same, for {@code region-block} lines. */
         boolean firstBlockKind(String id) {
             return firstKind(id, this.blockKinds);
+        }
+
+        /**
+         * The same, for {@code itemmodel-miss} lines, on its own set.
+         *
+         * <p>Its own set because the two lines answer different questions and a block worth one
+         * is usually not worth the other: {@code region-block} already names every block id once,
+         * while this line only exists for the blocks whose own model had no quads - the population
+         * the item-model fallback is about. Sharing the set would silence half of them.
+         */
+        boolean firstItemModelKind(String id) {
+            return firstKind(id, this.itemModelKinds);
         }
 
         private static boolean firstKind(String id, java.util.Set<String> seen) {
@@ -2670,13 +3251,19 @@ public final class BlueprintBake {
             int facesBefore = collector.faces.size();
             BlockState material = copiedMaterial(w, pos, own);
             BlockState draw = own;
+            BlockEntity be = space.blockEntities.get(pos);
             BakedModel model = null;
+            // The block's own baked model, and whether it had anything to say. Both are kept for
+            // the `itemmodel-miss` line below, which is the answer to "why is this block a box".
+            BakedModel ownModel = null;
+            boolean ownQuads = false;
             String shapeSource;
             boolean threw = false;
             try {
                 if (own.getRenderShape() == RenderShape.MODEL) {
-                    BakedModel ownModel = dispatcher.getBlockModel(own);
-                    if (ownModel != null && hasQuads(w, pos, own, ownModel, random)) {
+                    ownModel = dispatcher.getBlockModel(own);
+                    ownQuads = ownModel != null && hasQuads(w, pos, own, ownModel, random);
+                    if (ownQuads) {
                         shapeSource = "baked-quads";
                         model = ownModel;
                     } else if (material != null && !material.isAir()
@@ -2692,6 +3279,18 @@ public final class BlueprintBake {
                         }
                     } else {
                         shapeSource = "voxelshape";
+                    }
+                    // Nothing the block model says. A block-modelling mod usually puts the
+                    // appearance in the item model of the block's own item (an air-stub
+                    // blockstate is the norm there), so that is asked before any box is drawn.
+                    if (model == null && itemModelDrawsBlock(be)) {
+                        BakedModel itemModel = itemModelOf(own);
+                        if (itemModel != null && itemModel != ownModel
+                                && hasItemQuads(itemModel, random,
+                                    modelDataForModel(w, pos, own, be, itemModel))) {
+                            shapeSource = "item-model";
+                            model = itemModel;
+                        }
                     }
                 } else {
                     // The geometry lives in a renderer, which the block-entity pass runs at the
@@ -2717,6 +3316,12 @@ public final class BlueprintBake {
                         threw = true;
                     }
                 }
+            } else if ("item-model".equals(shapeSource)) {
+                try {
+                    renderItemModelQuads(w, be, own, pos, pose, collector, random, model);
+                } catch (Throwable t) {
+                    threw = true;
+                }
             } else {
                 try {
                     renderBlockQuads(w, model, draw, pos, pose, collector, random);
@@ -2724,8 +3329,13 @@ public final class BlueprintBake {
                     threw = true;
                 }
             }
+            // The item model is the one path that changes what a quad's UVs mean, and only for
+            // the quads it drew: clear it here rather than inside the collector, so the next
+            // block starts from the model default.
+            collector.setUvLocal(false);
             pose.popPose();
-            if (collector.faces.size() > facesBefore) {
+            int produced = collector.faces.size() - facesBefore;
+            if (produced > 0) {
                 tally.produced++;
             } else {
                 String block = String.valueOf(net.minecraft.core.registries.BuiltInRegistries.BLOCK
@@ -2740,11 +3350,30 @@ public final class BlueprintBake {
             // that came out as `voxelshape` was given a box because nothing else answered.
             boolean blockFirst = tally.firstBlockKind(blockIdOf(own));
             if (blockFirst || tally.wantBlockLine()) {
-                BlockEntity be = space.blockEntities.get(pos);
                 BlueprintExporter.LOGGER.info(
                     "region-block: id={} state={} shape={} quads={} ber={} be-present={}",
-                    blockIdOf(own), keyStateOf(own), shapeSource,
-                    collector.faces.size() - facesBefore, berClassOf(be), be != null);
+                    blockIdOf(own), keyStateOf(own), shapeSource, produced,
+                    berClassOf(be), be != null);
+            }
+            // The item-model probe. Its whole question is "this block's own model had nothing to
+            // say - what drew it, and if nothing did, why". `quads` is the geometry the ladder
+            // ended up with, so `quads=0` is a block that is really missing and a positive number
+            // next to a shape of `item-model` is a block recovered from its item.
+            if (own.getRenderShape() == RenderShape.MODEL && !ownQuads
+                    && tally.firstItemModelKind(blockIdOf(own))) {
+                BlueprintExporter.LOGGER.info(
+                    "itemmodel-miss: id={} renderShape={} baked={} quads={} modelData={}",
+                    blockIdOf(own), own.getRenderShape(), ownModel != null, produced,
+                    modelDataKeys(modelDataForModel(w, pos, own, be, ownModel), be,
+                        ownModel == null ? null : ownModel.getClass()));
+            }
+            if ("item-model".equals(shapeSource) && produced > 0
+                    && ITEMMODEL_HIT_LOGGED < ITEMMODEL_HIT_LIMIT) {
+                ITEMMODEL_HIT_LOGGED++;
+                BlueprintExporter.LOGGER.info(
+                    "itemmodel-hit: id={} layer={} tex={} uv-space={} quads={} sig=neoforge",
+                    blockIdOf(own), collector.layer().name().toLowerCase(java.util.Locale.ROOT),
+                    collector.materialTexture(), collector.uvSpace(), produced);
             }
             // The cannon probe, on its own counter so a fleet of eighty cannons cannot push the
             // four verdicts above out of the log. Asked per block rather than per texture, because
@@ -5111,6 +5740,18 @@ public final class BlueprintBake {
     // ------------------------------------------------------------------- write
 
     private static int write(Collector collector, String name) throws IOException {
+        return write(collector, name, null);
+    }
+
+    /**
+     * The writer, with the name of every sub-level so the Blender helper can label its groups.
+     *
+     * @param spaceLabels sub-level index to the label the export used ({@code sub2:turret}), or
+     *                    null for a caller that has no such list - the object names then carry the
+     *                    index alone
+     */
+    private static int write(Collector collector, String name,
+                             java.util.Map<Integer, String> spaceLabels) throws IOException {
         Path outDir = outputDir();
         Path obj = outDir.resolve(name + ".obj");
         Path mtl = outDir.resolve(name + ".mtl");
@@ -5270,6 +5911,15 @@ public final class BlueprintBake {
         // relationship, which is not what the blueprint describes: Sable welds them into
         // one body whose parts keep their own frames.
         writeManifest(outDir.resolve(name + ".parts.json"), name, collector);
+
+        // The Blender side of the structure.
+        //
+        // OBJ has no concept of a collection, and the object names are what carries the structure:
+        // `sub00` is the world, `sub01`... are the sub-levels, and `subNN_partM` are the pieces
+        // that a block-entity renderer drew. Rather than change the format for one importer, the
+        // grouping is written beside the mesh as a script - which is also the only way to keep the
+        // names stable for everybody who already parses this file.
+        writeBlenderHelpers(outDir, name, collector, spaceLabels);
 
         // Neither used to happen: every material pointed at "textures/atlas/blocks.png.png"
         // (the atlas location already ends in .png, and ".png" was appended again) inside
@@ -5672,6 +6322,302 @@ public final class BlueprintBake {
         try (BufferedWriter w = Files.newBufferedWriter(path)) {
             w.write(json.toString());
         }
+    }
+
+    /**
+     * Write {@code <name>_blender.py} and {@code <name>.README.txt} beside the mesh.
+     *
+     * <p>Nothing about the OBJ changes: the {@code o subNN_partM} names stay exactly as they are,
+     * because they are what everything downstream reads. The structure is recovered from them by a
+     * script instead, which is the least intrusive of the options - an OBJ has no collection, a
+     * .blend would duplicate the asset, and a script is one file that can be read before it is run.
+     *
+     * <p>Both failures here are reported and swallowed: a missing helper does not lose the mesh.
+     */
+    private static void writeBlenderHelpers(Path outDir, String name, Collector collector,
+                                            java.util.Map<Integer, String> spaceLabels) {
+        java.util.TreeMap<Integer, String> labels = subLevelLabels(collector, spaceLabels);
+        try {
+            Path script = outDir.resolve(name + "_blender.py");
+            Files.writeString(script, blenderScript(name, labels),
+                java.nio.charset.StandardCharsets.UTF_8);
+            Path readme = outDir.resolve(name + ".README.txt");
+            Files.writeString(readme, blenderReadme(name, labels),
+                java.nio.charset.StandardCharsets.UTF_8);
+            BlueprintExporter.LOGGER.info(
+                "blender-helper: script={} readme={} groups={} rule=o-prefix",
+                script.getFileName(), readme.getFileName(), labels.size() + 1);
+        } catch (Throwable t) {
+            BlueprintExporter.LOGGER.warn("could not write the Blender helper for {}: {}",
+                name, t.toString());
+            BlueprintExporter.NOTES.add("Blender helper not written (" + t.getClass()
+                .getSimpleName() + "): group the objects by their subNN prefix by hand");
+        }
+    }
+
+    /**
+     * Sub-level index to the label the Blender collection is named after.
+     *
+     * <p>Taken from the region's own space list where there is one, because that is the name the
+     * player gave the structure; the indices present in the collector fill in the rest, so the
+     * script never has to guess that a group exists.
+     */
+    private static java.util.TreeMap<Integer, String> subLevelLabels(
+            Collector collector, java.util.Map<Integer, String> spaceLabels) {
+        java.util.TreeMap<Integer, String> out = new java.util.TreeMap<>();
+        java.util.TreeSet<Integer> seen = new java.util.TreeSet<>();
+        for (Face face : collector.faces) {
+            seen.add(face.subLevel);
+        }
+        if (spaceLabels != null) {
+            seen.addAll(spaceLabels.keySet());
+        }
+        java.util.Set<String> used = new java.util.LinkedHashSet<>();
+        for (Integer index : seen) {
+            String raw = spaceLabels == null ? null : spaceLabels.get(index);
+            String label = collectionLabel(index == null ? 0 : index, raw);
+            String unique = label;
+            int attempt = 2;
+            while (!used.add(unique.toLowerCase(java.util.Locale.ROOT))) {
+                unique = label + "_" + attempt;
+                attempt++;
+            }
+            out.put(index == null ? 0 : index, unique);
+        }
+        return out;
+    }
+
+    /**
+     * A sub-level label as a Blender collection suffix: letters, digits, underscore, hyphen.
+     *
+     * <p>{@code RegionSpace#label} is written for a log line ({@code sub2:turret}), so the index
+     * prefix and anything a Blender name would rather not carry are dropped here. A name that
+     * reduces to nothing - a structure named only in Chinese, say - falls back to the index, which
+     * is always present and always unique.
+     */
+    private static String collectionLabel(int index, String raw) {
+        String text = raw == null ? "" : raw;
+        int colon = text.indexOf(':');
+        if (colon >= 0 && colon + 1 < text.length()) {
+            text = text.substring(colon + 1);
+        }
+        StringBuilder out = new StringBuilder();
+        boolean previousUnderscore = false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            boolean keep = c < 128 && (Character.isLetterOrDigit(c) || c == '-' || c == '_');
+            if (keep) {
+                out.append(c);
+                previousUnderscore = false;
+            } else if (!previousUnderscore && out.length() > 0) {
+                out.append('_');
+                previousUnderscore = true;
+            }
+        }
+        String cleaned = out.toString();
+        while (cleaned.endsWith("_")) {
+            cleaned = cleaned.substring(0, cleaned.length() - 1);
+        }
+        if (cleaned.length() > 40) {
+            cleaned = cleaned.substring(0, 40);
+        }
+        if (cleaned.isEmpty()) {
+            cleaned = String.format(java.util.Locale.ROOT, "sub%02d", index);
+        }
+        return cleaned;
+    }
+
+    /**
+     * The Blender script, as text.
+     *
+     * <p>Written for Blender 4.x with the 3.x name as the fallback: 4.0 moved the OBJ importer from
+     * {@code bpy.ops.import_scene.obj} to {@code bpy.ops.wm.obj_import}, and both spellings are in
+     * the wild, so both are attempted and the one that worked is printed.
+     */
+    private static String blenderScript(String name, java.util.TreeMap<Integer, String> labels) {
+        StringBuilder py = new StringBuilder();
+        py.append("# -*- coding: utf-8 -*-\n");
+        py.append("# Sable export \"").append(name).append("\" -> Blender collections.\n");
+        py.append("# Run: Scripting workspace -> Open this file -> Run Script (Alt+P).\n");
+        py.append("# The OBJ object names carry the structure, so they are what this reads:\n");
+        py.append("#   sub00                  -> collection \"World\"\n");
+        py.append("#   sub01, sub02, ...      -> collection \"Sable_<label>\"\n");
+        py.append("#   subNN_partM / subNN_*  -> that group's sub-collection \"parts\"\n");
+        py.append("import os\n");
+        py.append("import re\n");
+        py.append("\n");
+        py.append("import bpy\n");
+        py.append("\n");
+        py.append("OBJ_NAME = ").append(pyString(name + ".obj")).append("\n");
+        py.append("PARTS = \"parts\"\n");
+        py.append("# (group name, parts) -> the collection object, because Blender keeps data-block\n");
+        py.append("# names unique and a second group's \"parts\" would be created over and over.\n");
+        py.append("PART_COLLECTIONS = {}\n");
+        py.append("# sub-level index -> collection suffix, as the export named it\n");
+        py.append("LABELS = {");
+        boolean first = true;
+        for (java.util.Map.Entry<Integer, String> entry : labels.entrySet()) {
+            if (entry.getKey() <= 0) {
+                continue;
+            }
+            if (!first) {
+                py.append(", ");
+            }
+            first = false;
+            py.append(entry.getKey()).append(": ").append(pyString(entry.getValue()));
+        }
+        py.append("}\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("def script_dir():\n");
+        py.append("    try:\n");
+        py.append("        return os.path.dirname(os.path.abspath(__file__))\n");
+        py.append("    except Exception:\n");
+        py.append("        return None\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("def find_obj():\n");
+        py.append("    \"\"\"The OBJ beside this script, else beside the .blend, else in the cwd.\"\"\"\n");
+        py.append("    folders = []\n");
+        py.append("    here = script_dir()\n");
+        py.append("    if here:\n");
+        py.append("        folders.append(here)\n");
+        py.append("    try:\n");
+        py.append("        if bpy.data.filepath:\n");
+        py.append("            folders.append(os.path.dirname(bpy.data.filepath))\n");
+        py.append("    except Exception:\n");
+        py.append("        pass\n");
+        py.append("    folders.append(os.getcwd())\n");
+        py.append("    for folder in folders:\n");
+        py.append("        path = os.path.join(folder, OBJ_NAME)\n");
+        py.append("        if os.path.isfile(path):\n");
+        py.append("            return path\n");
+        py.append("    return None\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("def import_obj(path):\n");
+        py.append("    \"\"\"Blender 4.x uses wm.obj_import; 3.x and older use import_scene.obj.\"\"\"\n");
+        py.append("    try:\n");
+        py.append("        bpy.ops.wm.obj_import(filepath=path)\n");
+        py.append("        return \"wm.obj_import\"\n");
+        py.append("    except Exception as first_error:\n");
+        py.append("        try:\n");
+        py.append("            bpy.ops.import_scene.obj(filepath=path)\n");
+        py.append("            return \"import_scene.obj\"\n");
+        py.append("        except Exception as second_error:\n");
+        py.append("            raise RuntimeError(\"OBJ import failed: %r / %r\"\n");
+        py.append("                             % (first_error, second_error))\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("def collection(label, parent=None):\n");
+        py.append("    \"\"\"The child of parent called label, created if it is not there yet.\"\"\"\n");
+        py.append("    owner = parent if parent is not None else bpy.context.scene.collection\n");
+        py.append("    found = owner.children.get(label)\n");
+        py.append("    if found is not None:\n");
+        py.append("        return found\n");
+        py.append("    created = bpy.data.collections.new(label)\n");
+        py.append("    owner.children.link(created)\n");
+        py.append("    return created\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("def move_to(obj, target):\n");
+        py.append("    if obj.name not in target.objects:\n");
+        py.append("        target.objects.link(obj)\n");
+        py.append("    for other in list(obj.users_collection):\n");
+        py.append("        if other is not target:\n");
+        py.append("            other.objects.unlink(obj)\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("def parts_collection(group):\n");
+        py.append("    \"\"\"The `parts` child of a group, created once and then reused.\"\"\"\n");
+        py.append("    key = group.name\n");
+        py.append("    found = PART_COLLECTIONS.get(key)\n");
+        py.append("    if found is not None:\n");
+        py.append("        return found\n");
+        py.append("    found = group.children.get(PARTS)\n");
+        py.append("    if found is None:\n");
+        py.append("        found = bpy.data.collections.new(PARTS)\n");
+        py.append("        group.children.link(found)\n");
+        py.append("    PART_COLLECTIONS[key] = found\n");
+        py.append("    return found\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("def group_of(obj_name):\n");
+        py.append("    \"\"\"(sub-level index, rest of the name) for an `o subNN...` object.\"\"\"\n");
+        py.append("    match = re.match(r\"^sub(\\d+)(.*)$\", obj_name)\n");
+        py.append("    if match is None:\n");
+        py.append("        return None\n");
+        py.append("    return int(match.group(1)), match.group(2)\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("def main():\n");
+        py.append("    path = find_obj()\n");
+        py.append("    if path is None:\n");
+        py.append("        print(\"[sable] %s not found next to this script\" % OBJ_NAME)\n");
+        py.append("        return\n");
+        py.append("    known = set(bpy.data.objects.keys())\n");
+        py.append("    how = import_obj(path)\n");
+        py.append("    imported = [bpy.data.objects[key] for key in bpy.data.objects.keys()\n");
+        py.append("                if key not in known]\n");
+        py.append("    print(\"[sable] %d object(s) from %s via %s\" % (len(imported), path, how))\n");
+        py.append("    world = collection(\"World\")\n");
+        py.append("    groups = {}\n");
+        py.append("    for obj in imported:\n");
+        py.append("        key = group_of(obj.name)\n");
+        py.append("        if key is None:\n");
+        py.append("            move_to(obj, collection(\"Other\"))\n");
+        py.append("            continue\n");
+        py.append("        index, suffix = key\n");
+        py.append("        if index == 0:\n");
+        py.append("            group = world\n");
+        py.append("        else:\n");
+        py.append("            group = groups.get(index)\n");
+        py.append("            if group is None:\n");
+        py.append("                group = collection(\"Sable_\" + LABELS.get(index, \"%02d\" % index))\n");
+        py.append("                groups[index] = group\n");
+        py.append("        if suffix:\n");
+        py.append("            move_to(obj, parts_collection(group))\n");
+        py.append("        else:\n");
+        py.append("            move_to(obj, group)\n");
+        py.append("    names = sorted(entry.name for entry in bpy.data.collections)\n");
+        py.append("    print(\"[sable] collections: %s\" % \", \".join(names))\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("main()\n");
+        return py.toString();
+    }
+
+    /** A Java string as a Python string literal, single quoted and escaped. */
+    private static String pyString(String text) {
+        StringBuilder out = new StringBuilder("'");
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\\' || c == '\'') {
+                out.append('\\').append(c);
+            } else if (c == '\n') {
+                out.append("\\n");
+            } else if (c < 128) {
+                out.append(c);
+            } else {
+                out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c));
+            }
+        }
+        return out.append('\'').toString();
+    }
+
+    /** The three to five lines that say how to use the two files. */
+    private static String blenderReadme(String name, java.util.TreeMap<Integer, String> labels) {
+        StringBuilder readme = new StringBuilder();
+        readme.append("Sable 选区导出 ").append(name).append('\n');
+        readme.append("1. Blender → Scripting → Open 选 ").append(name)
+            .append("_blender.py → Run Script（Alt+P），它会导入同目录的 ").append(name)
+            .append(".obj。\n");
+        readme.append("2. 大纲视图会出现 World（世界方块 sub00）与 ")
+            .append(labels.size() <= 1 ? "Sable_*（子关卡）" : "Sable_*（每个子关卡一个）")
+            .append("；每组里的 parts 子集合放 *_partN（第二个起 Blender 会叫 parts.001）。\n");
+        readme.append("3. 不想跑脚本也行：File → Import → Wavefront (.obj)，再按对象名前缀 subNN 手工分组。\n");
+        readme.append("4. .obj / .mtl / textures 必须放在同一目录，否则材质没有贴图。\n");
+        return readme.toString();
     }
 
     /** The OBJ object name for a sub-level; must match what {@code write} emits. */
@@ -7170,6 +8116,11 @@ public final class BlueprintBake {
 
         /** Which coordinate space the quad about to be written used, as one word. */
         private String uvSpaceOfQuad() {
+            if (this.uvLocal) {
+                // Set by the item-model path when the model built its own vertices in 0..1. It
+                // outranks everything below because it is measured on the quad itself.
+                return "local";
+            }
             if (resolvedTileForQuad() != null) {
                 return "atlas";
             }
@@ -7217,6 +8168,23 @@ public final class BlueprintBake {
         void setUvNeedsAtlasConversion(boolean needed) {
             this.uvNeedsAtlasConversion = needed;
         }
+
+        /**
+         * Declare that the vertices about to arrive are already in a texture's own 0..1 space.
+         *
+         * <p>For the item-model path only. A baked quad is in atlas coordinates - measured on
+         * 1.21.1, {@code FaceBakery.fillVertex} stores {@code sprite.getU(u / 16)} - so the usual
+         * conversion applies; but a model that builds its own {@code BakedQuad} may hand over
+         * 0..1, and dividing that by the sprite's span would collapse a whole image into a single
+         * texel. Declared per quad, cleared by the caller when the item is done, and reported as
+         * {@code uv-space=local} in the material line rather than guessed at afterwards.
+         */
+        void setUvLocal(boolean local) {
+            this.uvLocal = local;
+        }
+
+        /** True while the quads being written are in their texture's own 0..1 space. */
+        private boolean uvLocal;
 
         /** A one-line summary of this material's UV conversion, or null if none ran. */
         String uvSummary() {
@@ -7282,7 +8250,9 @@ public final class BlueprintBake {
             //
             // The two paths are therefore kept apart. `emitQuad` clears this flag for a model's
             // quad, whose UVs really are atlas coordinates; the block-entity pass sets it.
-            if (!this.uvNeedsAtlasConversion) {
+            // `uvLocal` overrides both: it is only set by the item-model path, and only for quads
+            // whose UVs were measured to be inside 0..1 and outside their sprite's atlas rect.
+            if (!this.uvNeedsAtlasConversion || this.uvLocal) {
                 if (DIAGNOSTICS) {
                     uvInputCount++;
                     uvInputMin = Math.min(uvInputMin, Math.min(u, v));

@@ -50,6 +50,28 @@ public final class YuushyaBigCannonCompat {
     /** Mod id of the modelling mod this is a soft dependency on. */
     public static final String YUUSHYA = "yuushya_modelling";
 
+    /**
+     * Set once when the first entry point notices the modelling mod is absent.
+     *
+     * <p>One line per game session, not one per registration attempt: the registration path is
+     * walked from several places (the mod bus, the model bake, the block entity type) and a pack
+     * without the modelling mod would otherwise write the same sentence three times.
+     */
+    private static final java.util.concurrent.atomic.AtomicBoolean SKIP_LOGGED =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /**
+     * Writes {@code yuushya: compat skipped (mod absent)} once and returns.
+     *
+     * <p>Called from the first line of every entry point, before any modelling class is touched.
+     * Safe with the mod present too: it then does nothing.
+     */
+    public static void logCompatSkippedOnce(String entry) {
+        if (SKIP_LOGGED.compareAndSet(false, true)) {
+            FireControlCompat.LOGGER.info("yuushya: compat skipped (mod absent) entry={}", entry);
+        }
+    }
+
     public static final DeferredRegister.Blocks BLOCKS =
             DeferredRegister.createBlocks(FireControlCompat.MOD_ID);
 
@@ -72,7 +94,20 @@ public final class YuushyaBigCannonCompat {
         return new YuushyaShowBigCannonBarrelBlock(YuushyaShowBigCannonBarrelBlock.createProperties());
     }
 
+    /**
+     * Registers the barrel block on the mod bus.
+     *
+     * <p>The mod-loaded check is the first line and not merely implied by
+     * {@link #SHOW_BIG_CANNON_BARREL} being null: with the modelling mod absent this whole package
+     * is dead weight, and a single explicit guard is what keeps "register" from ever reaching
+     * {@code BLOCKS.register} - and therefore the block, its block entity and the modelling
+     * superclass - in a pack that does not have Yuushya Modelling installed.
+     */
     public static void register(IEventBus bus) {
+        if (!isAvailable()) {
+            logCompatSkippedOnce("register");
+            return;
+        }
         if (SHOW_BIG_CANNON_BARREL == null) {
             return;
         }
@@ -85,6 +120,10 @@ public final class YuushyaBigCannonCompat {
      * modelling block in every other way too.
      */
     public static void initialize() {
+        if (!isAvailable()) {
+            logCompatSkippedOnce("initialize");
+            return;
+        }
         if (SHOW_BIG_CANNON_BARREL == null) {
             return;
         }

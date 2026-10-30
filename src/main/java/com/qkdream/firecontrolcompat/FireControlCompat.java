@@ -110,9 +110,20 @@ public final class FireControlCompat {
         // Startup probe: the whole constructor is timed, and the missile registry call inside it
         // is timed again on its own so the two numbers can be read apart.
         long probeConstructor = StartupProbe.tick();
-        // The blueprint exporter was its own mod until 1.70; its listeners are registered here
-        // now, which is the only thing that used to happen in its own @Mod constructor.
-        new com.qkdream.firecontrolcompat.blueprint.BlueprintExporter(modEventBus);
+        // The blueprint exporter is CLIENT ONLY and is no longer constructed here.
+        //
+        // It was moved to `client/BlueprintClientSetup` and `client/BlueprintClientEvents` - two
+        // @EventBusSubscriber(value = Dist.CLIENT) classes - because this constructor runs on a
+        // dedicated server too, and the exporter's own constant pool names the client's Screen
+        // (through BlueprintExportScreen) and Minecraft. Linking it there produced, in a player's
+        // own dedicated-server test:
+        //   Attempted to load class net/minecraft/client/gui/screens/Screen for invalid dist
+        //   DEDICATED_SERVER
+        // FML checks the annotated dist against the scanned mod-file data before it ever loads
+        // those two classes, so the server path does not name them at all.
+        //
+        // Verified statically: `javap -p -c com.qkdream.firecontrolcompat.FireControlCompat`
+        // contains no `net/minecraft/client/` and no `blueprint/` reference.
 
 
         ShaolibBridge.resolve();
@@ -289,6 +300,25 @@ public final class FireControlCompat {
         if (isModLoaded(YuushyaBigCannonCompat.YUUSHYA)) {
 
             YuushyaBigCannonCompat.initialize();
+
+        }
+
+        // The blueprint tool is an optional neighbour, and the sonar set only borrows one hook from
+        // it: the reference that lets a copied set find its computer again. Without the tool the set
+        // still rebuilds its binding from the offset it saves, so this is never required - and a
+        // tool whose API moved must not stop the mod from starting.
+        if (isModLoaded("sable_schematic_api")) {
+
+            try {
+
+                com.qkdream.firecontrolcompat.sonar.SonarBlueprintCompat.register();
+
+            } catch (Throwable failure) {
+
+                LOGGER.warn("sonar binding: the blueprint mapper could not be registered: {}",
+                        failure.toString());
+
+            }
 
         }
 

@@ -71,8 +71,37 @@ public class SonarBlockEntity extends BlockEntity {
     /** Half a second between two sweeps. */
     private static final int SWEEP_PERIOD = 10;
 
+    /**
+     * NBT keys of the binding.
+     *
+     * <p>{@code ControllerPos} is the absolute place of the computer and is what an older save
+     * holds; it is also what the fire control screen reads back. The absolute place alone does not
+     * survive a copy, though: a blueprint, a schematic or a re-assembly writes the same bytes at a
+     * new place and the number then points at whatever the old coordinates hold now - which is
+     * exactly the "it forgot who it answers to" the player reports. {@code ControllerDX/DY/DZ} plus
+     * {@code ControllerSameBody} are the same binding written as an offset from this set, which a
+     * pure translation leaves untouched, so the set can rebuild the absolute place wherever it
+     * wakes up.</p>
+     */
+    public static final String KEY_CONTROLLER_POS = "ControllerPos";
+    public static final String KEY_CONTROLLER_SUB_LEVEL = "ControllerSubLevel";
+    public static final String KEY_CONTROLLER_DX = "ControllerDX";
+    public static final String KEY_CONTROLLER_DY = "ControllerDY";
+    public static final String KEY_CONTROLLER_DZ = "ControllerDZ";
+    public static final String KEY_CONTROLLER_SAME_BODY = "ControllerSameBody";
+
     private BlockPos controllerPos;
     private UUID controllerSubLevel;
+    /** The binding as an offset from this set: the form a copy or a move cannot break. */
+    private BlockPos controllerDelta;
+    /** True while the computer rides the same body - the same sub-level - as this set. */
+    private boolean controllerSameBody;
+    /** False while the absolute place still has to be rebuilt from {@link #controllerDelta}. */
+    private boolean bindingResolved = true;
+    private long bindingResolvedAt;
+    private String bindingLoadedKeys = "";
+    private boolean bindingLoadPending;
+    private boolean bindingMigrated;
     private double range = DEFAULT_RANGE;
     private double halfAngle = DEFAULT_ANGLE;
     private double elevationUp = DEFAULT_ELEVATION;
@@ -98,9 +127,15 @@ public class SonarBlockEntity extends BlockEntity {
     }
 
     private void tick() {
+        // Every tick is cheap: the guard in here only does work when the set has actually moved,
+        // which is what a blueprint paste, a re-assembly or a fresh chunk load looks like.
+        this.resolveBinding();
         Level level = this.getLevel();
         if (level == null || level.isClientSide) {
             return;
+        }
+        if (this.bindingLoadPending) {
+            this.logBindingLoad();
         }
         if (level.getGameTime() % SWEEP_PERIOD != 0L) {
             return;
@@ -115,6 +150,19 @@ public class SonarBlockEntity extends BlockEntity {
         if (level != null && !level.isClientSide) {
             SonarTracker.track(this);
         }
+        this.resolveBinding();
+        if (this.bindingLoadPending && (level == null || !level.isClientSide)) {
+            this.logBindingLoad();
+        }
+    }
+
+    @Override
+    public void setLevel(Level level) {
+        super.setLevel(level);
+        // A block entity that is handed a new level is a block entity that has been moved: the
+        // absolute place of the computer has to be rebuilt from the offset before anyone reads it.
+        this.bindingResolved = false;
+        this.resolveBinding();
     }
 
     @Override
@@ -223,10 +271,27 @@ public class SonarBlockEntity extends BlockEntity {
         return result.lengthSqr() < 1.0E-8D ? new Vec3(0.0D, 0.0D, -1.0D) : result.normalize();
     }
 
-    /** Points the set at a fire control computer. */
+    /**
+     * Points the set at a fire control computer.
+     *
+     * <p>Three things are kept: the absolute place (what the screen reads), the same place written
+     * as an offset from this set, and whether the computer rides the same body. The offset is the
+     * half that survives being copied, so a set that is saved into a blueprint and printed
+     * somewhere else comes back up still answering to its own computer.</p>
+     */
     public void bind(BlockPos pos, UUID subLevel) {
         this.controllerPos = pos == null ? null : pos.immutable();
         this.controllerSubLevel = subLevel;
+        if (pos == null) {
+            this.controllerDelta = null;
+            this.controllerSameBody = false;
+        } else {
+            this.controllerDelta = pos.subtract(this.worldPosition);
+            this.controllerSameBody = sameBodyAs(subLevel);
+        }
+        this.bindingResolved = true;
+        this.bindingResolvedAt = this.worldPosition.asLong();
+        this.bindingLoadPending = false;
         this.setChanged();
     }
 
@@ -234,27 +299,85 @@ public class SonarBlockEntity extends BlockEntity {
     public void clearBinding() {
         this.controllerPos = null;
         this.controllerSubLevel = null;
+        this.controllerDelta = null;
+        this.controllerSameBody = false;
+        this.bindingResolved = true;
+        this.bindingResolvedAt = this.worldPosition.asLong();
+        this.bindingLoadPending = false;
         this.setChanged();
     }
 
     public boolean isBound() {
+        this.resolveBinding();
         return this.controllerPos != null;
     }
 
     /** Whether this set answers to the computer with that identity. */
     public boolean isBoundTo(BlockPos pos, UUID subLevel) {
+        this.resolveBinding();
         if (this.controllerPos == null || pos == null || !this.controllerPos.equals(pos)) {
             return false;
         }
-        return this.controllerSubLevel == null || subLevel == null || this.controllerSubLevel.equals(subLevel);
+        UUID mine = this.controllerSubLevel();
+        return mine == null || subLevel == null || mine.equals(subLevel);
     }
 
     public BlockPos controllerPos() {
+        this.resolveBinding();
         return this.controllerPos;
     }
 
     public UUID controllerSubLevel() {
+        // For a computer on this set's own body the identity is the body's, and a body that is
+        // re-assembled, reprinted or reloaded has a new identity - so it is read live rather than
+        // remembered across a copy.
+        if (this.controllerDelta != null && this.controllerSameBody) {
+            this.controllerSubLevel = SonarTracker.subLevelOf(this);
+        }
         return this.controllerSubLevel;
+    }
+
+    /**
+     * Rebuilds the absolute place of the computer from the offset, once per place.
+     *
+     * <p>This is the whole repair: a copy writes the same offset next to a different block, so the
+     * target is literally "the same distance that way", and that is where the copied computer is.
+     * Nothing is marked dirty here - a read must not make the chunk save itself.</p>
+     *
+     * @return whether the set has a place to answer to afterwards
+     */
+    public boolean resolveBinding() {
+        if (this.controllerDelta == null) {
+            return this.controllerPos != null;
+        }
+        long here = this.worldPosition.asLong();
+        if (this.bindingResolved && here == this.bindingResolvedAt) {
+            return this.controllerPos != null;
+        }
+        this.controllerPos = this.worldPosition.offset(this.controllerDelta);
+        if (this.controllerSameBody) {
+            this.controllerSubLevel = SonarTracker.subLevelOf(this);
+        }
+        this.bindingResolved = true;
+        this.bindingResolvedAt = here;
+        return true;
+    }
+
+    /**
+     * Called once a blueprint (or any other copy) has printed this set and loaded its data, so the
+     * binding is rebuilt and reported before the player opens anything.
+     */
+    public void onBlueprintRestored() {
+        this.bindingResolved = false;
+        this.resolveBinding();
+        if (this.bindingLoadPending) {
+            this.logBindingLoad();
+        }
+    }
+
+    /** Whether the computer with that identity rides this set's own body. */
+    private boolean sameBodyAs(UUID subLevel) {
+        return java.util.Objects.equals(subLevel, SonarTracker.subLevelOf(this));
     }
 
     /** Range, window, mode and picture placement written on the fire control screen. */
@@ -391,10 +514,26 @@ public class SonarBlockEntity extends BlockEntity {
     @Override
     protected void saveAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.saveAdditional(tag, registries);
+        List<String> written = new ArrayList<>();
+        try {
+            this.prepareBindingForSave();
+        } catch (Throwable ignored) {
+            // A save must never fail over the binding; the absolute place below still goes in.
+        }
         if (this.controllerPos != null) {
-            tag.putLong("ControllerPos", this.controllerPos.asLong());
+            tag.putLong(KEY_CONTROLLER_POS, this.controllerPos.asLong());
+            written.add(KEY_CONTROLLER_POS);
             if (this.controllerSubLevel != null) {
-                tag.putUUID("ControllerSubLevel", this.controllerSubLevel);
+                tag.putUUID(KEY_CONTROLLER_SUB_LEVEL, this.controllerSubLevel);
+                written.add(KEY_CONTROLLER_SUB_LEVEL);
+            }
+            if (this.controllerDelta != null && this.controllerSameBody) {
+                tag.putInt(KEY_CONTROLLER_DX, this.controllerDelta.getX());
+                tag.putInt(KEY_CONTROLLER_DY, this.controllerDelta.getY());
+                tag.putInt(KEY_CONTROLLER_DZ, this.controllerDelta.getZ());
+                tag.putBoolean(KEY_CONTROLLER_SAME_BODY, true);
+                written.add(KEY_CONTROLLER_DX + "," + KEY_CONTROLLER_DY + "," + KEY_CONTROLLER_DZ);
+                written.add(KEY_CONTROLLER_SAME_BODY);
             }
         }
         tag.putDouble("SonarRange", this.range);
@@ -406,15 +545,40 @@ public class SonarBlockEntity extends BlockEntity {
         tag.putDouble("SonarHudY", this.hudY);
         tag.putDouble("SonarHudScale", this.hudScale);
         tag.putString("SonarName", this.name);
+        this.logBindingSave(written);
     }
 
     @Override
     protected void loadAdditional(CompoundTag tag, HolderLookup.Provider registries) {
         super.loadAdditional(tag, registries);
-        if (tag.contains("ControllerPos")) {
-            this.controllerPos = BlockPos.of(tag.getLong("ControllerPos"));
-            this.controllerSubLevel = tag.hasUUID("ControllerSubLevel") ? tag.getUUID("ControllerSubLevel") : null;
+        // A load replaces the binding outright: a tag without one means a set that answers to
+        // nobody, and keeping whatever this object held before would be a binding to nothing.
+        List<String> keys = new ArrayList<>();
+        this.controllerPos = tag.contains(KEY_CONTROLLER_POS) ? BlockPos.of(tag.getLong(KEY_CONTROLLER_POS)) : null;
+        if (this.controllerPos != null) {
+            keys.add(KEY_CONTROLLER_POS);
         }
+        this.controllerSubLevel = tag.hasUUID(KEY_CONTROLLER_SUB_LEVEL) ? tag.getUUID(KEY_CONTROLLER_SUB_LEVEL) : null;
+        if (this.controllerSubLevel != null) {
+            keys.add(KEY_CONTROLLER_SUB_LEVEL);
+        }
+        if (tag.contains(KEY_CONTROLLER_DX)) {
+            this.controllerDelta = new BlockPos(
+                    tag.getInt(KEY_CONTROLLER_DX), tag.getInt(KEY_CONTROLLER_DY), tag.getInt(KEY_CONTROLLER_DZ));
+            this.controllerSameBody = tag.getBoolean(KEY_CONTROLLER_SAME_BODY);
+            keys.add(KEY_CONTROLLER_DX + "," + KEY_CONTROLLER_DY + "," + KEY_CONTROLLER_DZ);
+            keys.add(KEY_CONTROLLER_SAME_BODY);
+            // The offset is the truth: this object may be waking up somewhere else entirely.
+            this.controllerPos = null;
+            this.bindingResolved = false;
+        } else {
+            this.controllerDelta = null;
+            this.controllerSameBody = false;
+            this.bindingResolved = true;
+            this.bindingResolvedAt = this.worldPosition.asLong();
+        }
+        this.bindingLoadedKeys = String.join(", ", keys);
+        this.bindingLoadPending = !keys.isEmpty();
         if (tag.contains("SonarRange")) {
             this.range = clampRange(tag.getDouble("SonarRange"));
         }
@@ -432,5 +596,81 @@ public class SonarBlockEntity extends BlockEntity {
         this.hudScale = clampHudScale(
                 tag.contains("SonarHudScale") ? tag.getDouble("SonarHudScale") : DEFAULT_HUD_SCALE);
         this.name = clampName(tag.getString("SonarName"));
+    }
+
+    /**
+     * Makes the binding save-ready: the offset is the truth on a shared body, and a save written
+     * before the offset existed gets one made from the absolute place it already has.
+     */
+    private void prepareBindingForSave() {
+        if (this.controllerPos == null) {
+            this.controllerDelta = null;
+            this.controllerSameBody = false;
+            return;
+        }
+        if (!this.controllerSameBody && sameBodyAs(this.controllerSubLevel)) {
+            this.controllerSameBody = true;
+        }
+        if (!this.controllerSameBody) {
+            // Across bodies the offset means nothing; the absolute place is all there is.
+            this.controllerDelta = null;
+            return;
+        }
+        if (this.controllerDelta == null) {
+            this.controllerDelta = this.controllerPos.subtract(this.worldPosition);
+            if (!this.bindingMigrated) {
+                this.bindingMigrated = true;
+                com.qkdream.firecontrolcompat.FireControlCompat.LOGGER.info(
+                        "sonar-binding: migrate legacy->relative be={} rel={}",
+                        this.worldPosition.toShortString(), shortPos(this.controllerDelta));
+            }
+        }
+        // Rebuilt from the offset so a set that was moved after it was bound still saves the
+        // place its computer is at now.
+        this.controllerPos = this.worldPosition.offset(this.controllerDelta);
+        this.controllerSubLevel = SonarTracker.subLevelOf(this);
+        this.bindingResolved = true;
+        this.bindingResolvedAt = this.worldPosition.asLong();
+    }
+
+    private void logBindingSave(List<String> written) {
+        if (written.isEmpty()) {
+            // A set that answers to nobody has nothing to report, and most sets are that.
+            return;
+        }
+        try {
+            com.qkdream.firecontrolcompat.FireControlCompat.LOGGER.info(
+                    "sonar-binding: save be={} keys=[{}] fields=[pos={} sub={} rel={} same-body={}]",
+                    this.worldPosition.toShortString(),
+                    String.join(", ", written),
+                    this.controllerPos == null ? "-" : this.controllerPos.toShortString(),
+                    this.controllerSubLevel == null ? "-" : this.controllerSubLevel.toString(),
+                    this.controllerDelta == null ? "-" : shortPos(this.controllerDelta),
+                    this.controllerSameBody);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void logBindingLoad() {
+        this.bindingLoadPending = false;
+        try {
+            Level level = this.getLevel();
+            if (level != null && level.isClientSide) {
+                return;
+            }
+            boolean restored = this.controllerPos != null || this.controllerDelta != null;
+            boolean resolved = this.resolveBinding();
+            com.qkdream.firecontrolcompat.FireControlCompat.LOGGER.info(
+                    "sonar-binding: load be={} restored={} keys=[{}] resolved={} target={} rel={} same-body={}",
+                    this.worldPosition.toShortString(), restored, this.bindingLoadedKeys, resolved,
+                    this.controllerPos == null ? "-" : this.controllerPos.toShortString(),
+                    this.controllerDelta == null ? "-" : shortPos(this.controllerDelta),
+                    this.controllerSameBody);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String shortPos(BlockPos pos) {
+        return pos.getX() + "," + pos.getY() + "," + pos.getZ();
     }
 }

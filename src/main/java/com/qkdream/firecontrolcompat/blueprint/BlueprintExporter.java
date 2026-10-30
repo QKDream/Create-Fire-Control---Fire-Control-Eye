@@ -7,12 +7,9 @@ import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
-import net.neoforged.bus.api.IEventBus;
-import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
-import net.neoforged.neoforge.common.NeoForge;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -85,15 +82,26 @@ public final class BlueprintExporter {
 
     private static KeyMapping openExporter;
 
-    public BlueprintExporter(IEventBus modEventBus) {
-        // The keybind listener belongs on the MOD bus and has to be added from the
-        // constructor, before the bus fires; the tick and command listeners belong
-        // on the game bus.
-        modEventBus.addListener(BlueprintExporter::onRegisterKeys);
-        modEventBus.addListener(BlueprintExporter::onClientSetup);
-        NeoForge.EVENT_BUS.addListener(BlueprintExporter::onClientTick);
-        NeoForge.EVENT_BUS.addListener(BlueprintExporter::onRegisterClientCommands);
+    /** No instances, on purpose: the four entry points below are static and client-only. */
+    private BlueprintExporter() {
     }
+
+    /*
+     * Registration note (1.70.6, dedicated-server isolation):
+     *
+     * There is deliberately NO constructor any more. This class has net.minecraft.client.* in its
+     * constant pool (Minecraft, Screen via BlueprintExportScreen), so it must never be touched on
+     * a dedicated server. Registration used to run from FireControlCompat's constructor
+     * (`new BlueprintExporter(modEventBus)`), which is exactly why a dedicated server died with
+     * "Attempted to load class net/minecraft/client/gui/screens/Screen for invalid dist
+     * DEDICATED_SERVER".
+     *
+     * The four entry points below are now called from two @EventBusSubscriber(value = Dist.CLIENT)
+     * classes (client.BlueprintClientSetup on the mod bus, client.BlueprintClientEvents on the game
+     * bus). FML reads that annotation out of the scanned mod-file data and only instantiates the
+     * class when the dist matches, so a server never resolves them - and the common entry point
+     * does not name either class.
+     */
 
     /**
      * Adds the export mode to the Sable blueprint tool.
@@ -103,7 +111,7 @@ public final class BlueprintExporter {
      * needs - still loads this mod rather than failing on a missing class. The mod
      * therefore declares no hard dependency on either.
      */
-    private static void onClientSetup(net.neoforged.fml.event.lifecycle.FMLClientSetupEvent event) {
+    public static void onClientSetup(net.neoforged.fml.event.lifecycle.FMLClientSetupEvent event) {
         if (!net.neoforged.fml.ModList.get().isLoaded("sable_schematic_api")) {
             LOGGER.info("blueprint tool not present; skipping the export mode");
             return;
@@ -111,7 +119,7 @@ public final class BlueprintExporter {
         event.enqueueWork(com.qkdream.firecontrolcompat.blueprint.photomancy.PhotomancyIntegration::register);
     }
 
-    private static void onRegisterKeys(RegisterKeyMappingsEvent event) {
+    public static void onRegisterKeys(RegisterKeyMappingsEvent event) {
         openExporter = new KeyMapping(
             "key.sableblueprintexporter.open",
             InputConstants.Type.KEYSYM,
@@ -120,7 +128,7 @@ public final class BlueprintExporter {
         event.register(openExporter);
     }
 
-    private static void onClientTick(ClientTickEvent.Post event) {
+    public static void onClientTick(ClientTickEvent.Post event) {
         // The capture window is one frame; this closes it even if the render loop never calls back.
         try {
             com.qkdream.firecontrolcompat.blueprint.capture.CaptureExport.tick();
@@ -146,7 +154,7 @@ public final class BlueprintExporter {
      * on the client. Registered on the game bus so a mod with no common-side code
      * still loads on a dedicated server without a class-loading failure.
      */
-    private static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
+    public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
         event.getDispatcher().register(
             Commands.literal("sableexport")
                 .then(Commands.literal("where")

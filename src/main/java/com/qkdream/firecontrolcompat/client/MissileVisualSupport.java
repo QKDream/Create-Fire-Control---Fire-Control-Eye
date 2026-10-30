@@ -60,9 +60,16 @@ public final class MissileVisualSupport {
     private MissileVisualSupport() {
     }
 
-    /** Whether this entity is fire control's long-range proxy rather than a server-ticked round. */
+    /**
+     * Whether this entity is fire control's long-range proxy rather than a server-ticked round.
+     *
+     * <p>Delegates to the common {@link com.qkdream.firecontrolcompat.entity.RemoteVisualState}:
+     * the predicate is pure persistent-data, and the cook-off listener (a server-side explosion
+     * handler) needs the same answer, so it can no longer live in a client class. Behaviour and the
+     * marker's meaning are unchanged - the key is still {@code CreateFireControlRemoteVisual}.</p>
+     */
     public static boolean isRemoteVisual(Entity entity) {
-        return entity != null && entity.getPersistentData().getBoolean("CreateFireControlRemoteVisual");
+        return com.qkdream.firecontrolcompat.entity.RemoteVisualState.isRemoteVisual(entity);
     }
 
     /**

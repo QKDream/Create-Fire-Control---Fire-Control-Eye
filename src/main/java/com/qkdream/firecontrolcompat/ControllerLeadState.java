@@ -58,8 +58,7 @@ public final class ControllerLeadState {
                 // Falls through to the saved copy.
             }
         }
-        LeadCannonKind filed = ControllerLeadStore.kindOf(controller.getLevel(),
-                ControllerLeadStore.keyOf(controller.getLevel(), controller));
+        LeadCannonKind filed = ControllerLeadStore.kindOf(controller.getLevel(), controller);
         return filed == null ? FireControlLeadSettings.leadCannonKind() : filed;
     }
 
@@ -72,6 +71,8 @@ public final class ControllerLeadState {
         controller.setChanged();
         ControllerLeadStore.put(controller.getLevel(),
                 ControllerLeadStore.keyOf(controller.getLevel(), controller), kind, -1);
+        // The copy that travels with a blueprint, under its own key (BindStoreMirror).
+        ControllerLeadStore.mirror(controller, kind, -1);
     }
 
     /** The powder charge this computer uses for big cannon shots. */
@@ -83,8 +84,7 @@ public final class ControllerLeadState {
         if (tag.contains(CHARGE_KEY)) {
             return clampCharge(tag.getInt(CHARGE_KEY));
         }
-        int filed = ControllerLeadStore.chargeOf(controller.getLevel(),
-                ControllerLeadStore.keyOf(controller.getLevel(), controller));
+        int filed = ControllerLeadStore.chargeOf(controller.getLevel(), controller);
         return filed < 0 ? FireControlLeadSettings.bigCannonCharge() : clampCharge(filed);
     }
 
@@ -98,6 +98,8 @@ public final class ControllerLeadState {
         controller.setChanged();
         ControllerLeadStore.put(controller.getLevel(),
                 ControllerLeadStore.keyOf(controller.getLevel(), controller), null, clamped);
+        // The copy that travels with a blueprint, under its own key (BindStoreMirror).
+        ControllerLeadStore.mirror(controller, null, clamped);
     }
 
     private static int clampCharge(int charge) {
@@ -150,6 +152,8 @@ public final class ControllerLeadState {
         if (!resolvedKey.equals(ControllerLeadStore.keyOf(level, pos, subLevel))) {
             ControllerLeadStore.put(controller.getLevel(), resolvedKey, parsed, clampCharge(charge));
         }
+        // The copy that travels with a blueprint, under its own key (BindStoreMirror).
+        ControllerLeadStore.mirror(controller, parsed, clampCharge(charge));
         log("lead-save written source=controller tagKind={} tagCharge={} readKind={} readCharge={}",
                 controller.getPersistentData().getString(KIND_KEY),
                 controller.getPersistentData().getInt(CHARGE_KEY),

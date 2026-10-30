@@ -512,12 +512,31 @@ public final class CompatScanner {
             reportOcclusion(level, disabled);
             return disabled;
         }
+        if (!OcclusionSwitch.enabled()) {
+            // Switched off by command or config: every contact is visible. Nothing is looked up
+            // and nothing is remembered - a screen that is off must not leave state behind that
+            // changes how it behaves the moment it is switched back on.
+            TerrainReport off = new TerrainReport(
+                    contacts.size(), contacts.size(), 0, 0, 0, 0, 0, "disabled");
+            reportOcclusion(level, off);
+            return off;
+        }
+        long now = firecontrolcompat$tick(level);
+        String dimension = firecontrolcompat$dimension(level);
+        // Closes the previous sweep's cost, which is what the status command quotes as "the last
+        // tick": the rays of one sweep added up, in microseconds.
+        OcclusionPerf.beginSweep();
         // Which level's blocks hold the world this radar stands in. Sable structures are stored in
         // a plot region twenty million blocks away, so a ray cast in the wrong space meets nothing
         // and every contact reads as visible - the failure this whole screen kept hiding behind.
-        SubLevelPositions.BlockSpace terrainSpace = firecontrolcompat$space(level, origin);
+        SubLevelPositions.BlockSpace terrainSpace = firecontrolcompat$space(level, origin, now);
         double loose = range * 1.5D;
         double looseSqr = loose * loose;
+        // Beyond this the screen stops judging at all - see firecontrolcompat$sightLimit for why
+        // it can never bite inside the radar's own range. A contact left untested stays *visible*,
+        // which is the only direction this screen is allowed to be wrong in.
+        double early = firecontrolcompat$sightLimit(range);
+        double earlySqr = early * early;
         int total = contacts.size();
         // A lambda cannot write a local, so the three counters travel in one array. Index order is
         // fixed here and read back below: 0 fluid, 1 terrain, 2 submerged.
@@ -547,9 +566,17 @@ public final class CompatScanner {
                 // Not where this radar's own frame would put it; leave it to the pack.
                 return false;
             }
+            if (distanceSqr > earlySqr) {
+                OcclusionPerf.skipRange();
+                return false;
+            }
             Sight sight = new Sight();
-            firecontrolcompat$sight(terrainSpace, origin, at, contact.bounds(),
-                    raycastFailed, sight, marchBudget, marchSamples, marchSolid);
+            boolean fromCache = firecontrolcompat$sightCached(dimension, now, terrainSpace,
+                    origin, at, contact.bounds(), raycastFailed, sight,
+                    marchBudget, marchSamples, marchSolid);
+            if (fromCache) {
+                return false;
+            }
             if (detailBudget[0] > 0) {
                 detailBudget[0]--;
                 firecontrolcompat$reportRay(level, origin, at, distanceSqr, sight);
@@ -576,6 +603,7 @@ public final class CompatScanner {
         TerrainReport report = new TerrainReport(total, total - occluded, occluded,
                 fluid, terrain, submerged, raycastFailed[0], reason);
         reportOcclusion(level, report);
+        firecontrolcompat$reportPerf(now);
         if (reportThisSweep && (contested[0] > 0 || marchSolid[0] > 0 || total > 0)) {
             FireControlCompat.LOGGER.info(
                     "occlusion scope=radar: called=true total={} occluded={} visible={} march={}"
@@ -596,7 +624,164 @@ public final class CompatScanner {
     private static final double MARCH_STEP = 1.5D;
 
     /**
-     * The unconditional "the caller really ran" line, printed once per {@link #OCCLUSION_LOG_TICKS}
+     * The furthest a contact is judged at, in blocks.
+     *
+     * <p>Five hundred is the default floor: beyond it a ray is both the most expensive one the
+     * sweep can cast and the least meaningful one - the far edge of the drawn map, where a single
+     * unloaded chunk decides the answer. But the floor is raised to the radar's own range, because
+     * a contact the radar actually paints is a contact this screen has to judge: a mount watching
+     * eight hundred blocks would otherwise lose the screen over half its own picture, which is a
+     * worse fault than any amount of lag. So the invariant is</p>
+     *
+     * <pre>the screen never stops judging a contact that is inside the radar's own range</pre>
+     *
+     * <p>and what the limit really removes is the band the caller already tolerates - contacts
+     * past {@code range} but inside {@code range * 1.5}, which exist only because a contact may be
+     * reported in a frame this radar does not share. Those read as visible, which is the only
+     * direction this screen is allowed to be wrong in.</p>
+     */
+    private static final double SIGHT_EARLY_LIMIT = 512.0D;
+
+    /** The distance a radar's contacts stop being judged at; see {@link #SIGHT_EARLY_LIMIT}. */
+    private static double firecontrolcompat$sightLimit(double range) {
+        return Math.min(range * 1.5D, Math.max(SIGHT_EARLY_LIMIT, range));
+    }
+
+    /** Tick of the level passed in, or zero when the level has no clock yet. */
+    private static long firecontrolcompat$tick(Level level) {
+        try {
+            return level == null ? 0L : level.getGameTime();
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    /** Writes the five-second cost line when its window has closed, and nothing otherwise. */
+    private static void firecontrolcompat$reportPerf(long now) {
+        try {
+            String line = OcclusionPerf.reportIfDue(now);
+            if (line != null) {
+                FireControlCompat.LOGGER.info(line);
+            }
+        } catch (RuntimeException ignored) {
+            // A report is never worth a throw on the server thread.
+        }
+    }
+
+    // A radar asks "which level are my blocks in" once per contact and once per sweep, and the
+    // answer is the same for both: the level it stands on does not change between two reads. The
+    // two memos below are that answer, kept for a few ticks so a sweep with twenty contacts walks
+    // the Sable container once instead of forty times.
+
+    /** Level the root memo was taken for. */
+    private static Level rootMemoIn;
+
+    /** The root space of {@link #rootMemoIn}. */
+    private static SubLevelPositions.BlockSpace rootMemoOut;
+
+    /** Tick the root memo was taken at. */
+    private static long rootMemoAt;
+
+    /** How long the root memo is trusted, in ticks. */
+    private static final int ROOT_MEMO_TICKS = 20;
+
+    /** Level the dimension memo was taken for. */
+    private static Level dimensionMemoIn;
+
+    /** The dimension id of {@link #dimensionMemoIn}, pre-formatted. */
+    private static String dimensionMemoOut;
+
+    /** Tick the dimension memo was taken at. */
+    private static long dimensionMemoAt;
+
+    /** How long the dimension memo is trusted, in ticks. */
+    private static final int DIMENSION_MEMO_TICKS = 40;
+
+    /**
+     * The main level behind whatever level a caller holds, remembered for {@link #ROOT_MEMO_TICKS}.
+     *
+     * <p>Resolving it means a walk of the Sable container; a radar on a structure asks for it once
+     * per contact, so remembering it is the difference between one container walk a sweep and one
+     * per ray. The memo is keyed on the level instance, not the dimension, because two levels of
+     * one dimension are two different worlds as far as this is concerned.</p>
+     */
+    private static SubLevelPositions.BlockSpace firecontrolcompat$root(Level level, long now) {
+        if (rootMemoOut != null && rootMemoIn == level && now - rootMemoAt < ROOT_MEMO_TICKS) {
+            return rootMemoOut;
+        }
+        SubLevelPositions.BlockSpace root = SubLevelPositions.rootSpace(level);
+        rootMemoIn = level;
+        rootMemoOut = root;
+        rootMemoAt = now;
+        return root;
+    }
+
+    /**
+     * The dimension id of a level, remembered for {@link #DIMENSION_MEMO_TICKS}.
+     *
+     * <p>It is the cache key's first field, so it would otherwise be built - a resource location
+     * turned into a string - once per contact per tick, purely to be hashed.</p>
+     */
+    private static String firecontrolcompat$dimension(Level level) {
+        long now = firecontrolcompat$tick(level);
+        if (dimensionMemoOut != null && dimensionMemoIn == level
+                && now - dimensionMemoAt < DIMENSION_MEMO_TICKS) {
+            return dimensionMemoOut;
+        }
+        String id = "-";
+        try {
+            id = level == null ? "-" : level.dimension().location().toString();
+        } catch (Throwable ignored) {
+        }
+        dimensionMemoIn = level;
+        dimensionMemoOut = id;
+        dimensionMemoAt = now;
+        return id;
+    }
+
+    /**
+     * One contact's sight line, answered from the cache when the same line was cleared recently.
+     *
+     * <p>The cache only ever holds "clear" answers, so a hit here can only ever keep a contact that
+     * the last ray found visible. That is the whole safety argument: a stale entry costs a couple
+     * of ticks of latency on a target that has just slipped behind cover, and can never hide one
+     * the radar can actually see.</p>
+     *
+     * @return true when the answer came from the cache and no ray was cast
+     */
+    private static boolean firecontrolcompat$sightCached(
+            String dimension,
+            long now,
+            SubLevelPositions.BlockSpace space,
+            Vec3 origin,
+            Vec3 at,
+            AABB box,
+            int[] raycastFailed,
+            Sight out,
+            int[] marchBudget,
+            long[] marchSamples,
+            long[] marchSolid) {
+        if (origin == null || at == null) {
+            return false;
+        }
+        if (OcclusionCache.isClear(dimension, origin.x, origin.y, origin.z, at.x, at.y, at.z, now)) {
+            OcclusionPerf.skipCache();
+            return true;
+        }
+        int failuresBefore = raycastFailed == null ? 0 : raycastFailed[0];
+        firecontrolcompat$sight(space, origin, at, box, raycastFailed, out,
+                marchBudget, marchSamples, marchSolid);
+        // Only a ray that ran clean and found nothing is remembered: a ray that fell back on the
+        // sampled walk, or that could not run at all, says nothing about what is between the two
+        // points and must be asked again next tick.
+        if (out != null && out.reason == null
+                && (raycastFailed == null || raycastFailed[0] == failuresBefore)) {
+            OcclusionCache.rememberClear(dimension, origin.x, origin.y, origin.z, at.x, at.y, at.z, now);
+        }
+        return false;
+    }
+
+    /** The unconditional "the caller really ran" line, printed once per {@link #OCCLUSION_LOG_TICKS}
      * ticks, and immediately when a sweep arrives with contacts to test.
      */
     private static boolean firecontrolcompat$enter(
@@ -614,11 +799,7 @@ public final class CompatScanner {
             return false;
         }
         enterLogAt = now;
-        String dimension = "-";
-        try {
-            dimension = level.dimension().location().toString();
-        } catch (Throwable ignored) {
-        }
+        String dimension = firecontrolcompat$dimension(level);
         boolean chunk = false;
         try {
             chunk = terrainSpace != null && terrainSpace.level != null
@@ -675,12 +856,7 @@ public final class CompatScanner {
      * that made every contact look visible. When that happens the screen switches itself to the
      * plot's own space, and says so: {@code occlusion: mode=plot reason=root-blind}.</p>
      */
-    private static SubLevelPositions.BlockSpace firecontrolcompat$space(Level level, Vec3 origin) {
-        long now = 0L;
-        try {
-            now = level == null ? 0L : level.getGameTime();
-        } catch (Throwable ignored) {
-        }
+    private static SubLevelPositions.BlockSpace firecontrolcompat$space(Level level, Vec3 origin, long now) {
         boolean due = spaceMode == 0 || spaceProbeAt == 0L || now - spaceProbeAt >= SPACE_PROBE_TICKS;
         if (!due) {
             if (spaceMode == SPACE_PLOT) {
@@ -689,11 +865,14 @@ public final class CompatScanner {
                     return plot;
                 }
             }
-            return SubLevelPositions.rootSpace(level);
+            return firecontrolcompat$root(level, now);
         }
         spaceProbeAt = now;
-        SubLevelPositions.BlockSpace root = SubLevelPositions.rootSpace(level);
-        SubLevelPositions.BlockSpace plot = origin == null ? null : SubLevelPositions.plotSpace(level, origin);
+        // Root and plot are resolved from one answer: both need to know which level the main world
+        // is, and asking the Sable container twice per sweep for the same number was pure waste.
+        SubLevelPositions.BlockSpace root = firecontrolcompat$root(level, now);
+        SubLevelPositions.BlockSpace plot = origin == null ? null
+                : SubLevelPositions.plotSpace(level, origin, root == null ? null : root.level);
         Probe rootProbe = firecontrolcompat$probe(root, origin, "root");
         Probe plotProbe = plot == null ? null : firecontrolcompat$probe(plot, origin, "plot");
         boolean rootOk = rootProbe != null && rootProbe.healthy();
@@ -722,6 +901,11 @@ public final class CompatScanner {
         }
         spacePlot = spaceMode == SPACE_PLOT ? plot : null;
         terrainBlind = !(spaceMode == SPACE_PLOT ? plotOk : rootOk);
+        if (previous != 0 && previous != spaceMode) {
+            // Every remembered sight line was decided in the other space; none of them is a fact
+            // about the space in use now, so they are all retired together.
+            OcclusionCache.invalidate();
+        }
         FireControlCompat.LOGGER.info(
                 "occlusion: mode={} reason={} space={} root-down={} root-solid={} plot-down={}"
                         + " plot-solid={} changed={}",
@@ -806,18 +990,27 @@ public final class CompatScanner {
      * contacts would double the cost of every sweep.</p>
      */
     public static boolean overlooks(Level level, Vec3 origin, double range, Vec3 at, AABB box) {
-        if (level == null || origin == null || at == null) {
+        if (level == null || origin == null || at == null || !OcclusionSwitch.enabled()) {
             return false;
         }
-        double looseSqr = range * 1.5D * range * 1.5D;
+        double loose = range * 1.5D;
         double distanceSqr = at.distanceToSqr(origin);
-        if (distanceSqr > looseSqr) {
+        if (distanceSqr > loose * loose) {
             return false;
         }
+        double early = firecontrolcompat$sightLimit(range);
+        if (distanceSqr > early * early) {
+            OcclusionPerf.skipRange();
+            return false;
+        }
+        long now = firecontrolcompat$tick(level);
         Sight sight = new Sight();
-        firecontrolcompat$sight(firecontrolcompat$space(level, origin), origin, at, box,
-                new int[1], sight, new int[]{MARCH_SAMPLE_BUDGET}, new long[1], new long[1]);
-        return sight.reason != null;
+        boolean fromCache = firecontrolcompat$sightCached(
+                firecontrolcompat$dimension(level), now, firecontrolcompat$space(level, origin, now),
+                origin, at, box, new int[1], sight,
+                new int[]{MARCH_SAMPLE_BUDGET}, new long[1], new long[1]);
+        firecontrolcompat$reportPerf(now);
+        return !fromCache && sight.reason != null;
     }
 
     /**
@@ -846,11 +1039,41 @@ public final class CompatScanner {
      * world this radar stands in.</p>
      */
     private static String blockedReason(
-            SubLevelPositions.BlockSpace space, Vec3 origin, Vec3 at, AABB box, int[] raycastFailed) {
+            String dimension, long now, SubLevelPositions.BlockSpace space, Vec3 origin, Vec3 at,
+            AABB box, int[] raycastFailed) {
         Sight sight = new Sight();
-        firecontrolcompat$sight(space, origin, at, box, raycastFailed, sight,
+        firecontrolcompat$sightCached(dimension, now, space, origin, at, box, raycastFailed, sight,
                 new int[]{MARCH_SAMPLE_BUDGET}, new long[1], new long[1]);
         return sight.reason;
+    }
+
+    /**
+     * The line-of-sight test, timed.
+     *
+     * <p>One call is one ray - the clip, the fallback walk and the fluid tests of one contact -
+     * so wrapping it here is what makes {@code calls=} and {@code avg-us=} in the perf line mean
+     * something a report can quote. The wrapper cannot change the verdict: the body fills the same
+     * {@link Sight} it always did, and the only thing this adds is the stamp around it.</p>
+     */
+    private static void firecontrolcompat$sight(
+            SubLevelPositions.BlockSpace space,
+            Vec3 origin,
+            Vec3 at,
+            AABB box,
+            int[] raycastFailed,
+            Sight out,
+            int[] marchBudget,
+            long[] marchSamples,
+            long[] marchSolid) {
+        long started = System.nanoTime();
+        boolean blocked = false;
+        try {
+            firecontrolcompat$sightOnce(space, origin, at, box, raycastFailed, out,
+                    marchBudget, marchSamples, marchSolid);
+            blocked = out != null && out.reason != null;
+        } finally {
+            OcclusionPerf.record(System.nanoTime() - started, blocked);
+        }
     }
 
     /**
@@ -862,7 +1085,7 @@ public final class CompatScanner {
      * against it means something. A hit closer than {@link #NEAR_SKIP} is the radar's own mount and
      * is stepped over, not counted as cover.</p>
      */
-    private static void firecontrolcompat$sight(
+    private static void firecontrolcompat$sightOnce(
             SubLevelPositions.BlockSpace space,
             Vec3 origin,
             Vec3 at,
@@ -993,8 +1216,13 @@ public final class CompatScanner {
         if (!(span > 2.0D)) {
             return -1.0D;
         }
-        int wanted = (int) Math.ceil(span / MARCH_STEP);
-        int samples = Math.min(Math.min(wanted, 1200), budget[0]);
+        int wanted = (int) Math.ceil(span / firecontrolcompat$marchStep(span));
+        // The far cap is lower than the near one on purpose: the walk is a cross-check on a clip
+        // that answered "nothing", and the longer the ray the less a single extra sample buys. A
+        // coarser walk can only miss cover, never invent it, so the direction this trades in is the
+        // one the screen is allowed to be wrong in.
+        int cap = span <= 96.0D ? 1200 : 384;
+        int samples = Math.min(Math.min(wanted, cap), budget[0]);
         if (samples <= 2) {
             return -1.0D;
         }
@@ -1035,14 +1263,50 @@ public final class CompatScanner {
         return -1.0D;
     }
 
+    /**
+     * Blocks between two samples of the cross-check walk, by distance.
+     *
+     * <p>The walk exists to catch a clip that is blind, so it has to read real blocks - but it does
+     * not have to read them at one fixed density for a twelve-block ray and a five-hundred-block
+     * one. Near the aerial a one-block step is what makes the walk worth running at all; at four
+     * hundred blocks a six-block step still crosses every hill and costs a twelfth of the reads.
+     * Coarser sampling can only ever miss a thin wall (a false "visible"), which is the direction
+     * this screen is allowed to err in.</p>
+     */
+    private static double firecontrolcompat$marchStep(double span) {
+        if (!(span > 0.0D) || !Double.isFinite(span)) {
+            return MARCH_STEP;
+        }
+        if (span <= 24.0D) {
+            return 1.0D;
+        }
+        if (span <= 96.0D) {
+            return MARCH_STEP;
+        }
+        if (span <= 256.0D) {
+            return 3.0D;
+        }
+        return 6.0D;
+    }
+
     /** Display-side twin of {@link #stripTerrainBlocked}: same tests, the display's own contact type. */
     public static TerrainReport stripTerrainBlockedDisplay(
             Level level, Vec3 origin, double range, List<ConnectedDisplayBlockEntity.Contact> contacts) {
         if (level == null || origin == null || contacts == null || contacts.isEmpty()) {
             return new TerrainReport(contacts == null ? 0 : contacts.size(), 0, 0, 0, 0, 0, 0, "disabled");
         }
-        SubLevelPositions.BlockSpace terrainSpace = firecontrolcompat$space(level, origin);
+        if (!OcclusionSwitch.enabled()) {
+            // Same contract as the radar-side strip: off means every contact is visible, and no
+            // block is read, no entry is written.
+            return new TerrainReport(contacts.size(), contacts.size(), 0, 0, 0, 0, 0, "disabled");
+        }
+        long now = firecontrolcompat$tick(level);
+        String dimension = firecontrolcompat$dimension(level);
+        OcclusionPerf.beginSweep();
+        SubLevelPositions.BlockSpace terrainSpace = firecontrolcompat$space(level, origin, now);
         double looseSqr = range * 1.5D * range * 1.5D;
+        double early = firecontrolcompat$sightLimit(range);
+        double earlySqr = early * early;
         int total = contacts.size();
         int[] raycastFailed = new int[1];
         contacts.removeIf(contact -> {
@@ -1054,13 +1318,19 @@ public final class CompatScanner {
             if (distanceSqr > looseSqr) {
                 return false;
             }
-            return blockedReason(terrainSpace, origin, at, contact.bounds(), raycastFailed) != null;
+            if (distanceSqr > earlySqr) {
+                OcclusionPerf.skipRange();
+                return false;
+            }
+            return blockedReason(dimension, now, terrainSpace, origin, at, contact.bounds(),
+                    raycastFailed) != null;
         });
         int occluded = Math.max(0, total - contacts.size());
         TerrainReport report = new TerrainReport(total, total - occluded, occluded, 0, occluded, 0,
                 raycastFailed[0], raycastFailed[0] > 0 ? "raycast-fail"
                         : (terrainSpace != null && terrainSpace.isPlot() ? "plot" : "none"));
         reportOcclusion(level, report);
+        firecontrolcompat$reportPerf(now);
         return report;
     }
 

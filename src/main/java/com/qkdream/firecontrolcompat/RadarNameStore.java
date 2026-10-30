@@ -59,6 +59,11 @@ public final class RadarNameStore extends SavedData {
     /** Upper bound asked for by design: four characters, like a radio call sign. */
     public static final int MAX_NAME_LENGTH = 4;
 
+    /** This store's name in the {@code bind-store} and {@code migrate} lines. */
+    private static final String STORE = BindStoreMirror.RADAR_NAME;
+    /** Key the call sign is filed under inside the copy that rides on the computer. */
+    private static final String MIRROR_NAME = "name";
+
     /** Emitters this close to a named radar count as that radar's own hardware. */
     private static final double EMITTER_RADIUS = 32.0D;
 
@@ -116,15 +121,177 @@ public final class RadarNameStore extends SavedData {
         return "p:" + dimension + ":" + controller.getBlockPos().asLong();
     }
 
-    /** Name of a computer, empty when it has none. */
+    /**
+     * Name of a computer, empty when it has none.
+     *
+     * <p>The table is the index, and the computer carries the second copy of its own call sign
+     * (see {@link #mirror}). This is the one read path every caller goes through - the screen, the
+     * opposing receiver's threat marks, the platform lookups - so the repair of a copied computer
+     * happens here, on the first read after the copy is printed, rather than anywhere else.</p>
+     */
     public static String nameOf(Level level, StabilizerControllerBlockEntity controller) {
         if (controller == null) {
             return "";
         }
         try {
-            return table(level).getOrDefault(keyOf(level, controller), "");
+            sweep(level);
+            String key = keyOf(level, controller);
+            String filed = table(level).getOrDefault(key, "");
+            if (!filed.isEmpty()) {
+                // A world bound before the copy existed: file the call sign on the computer now,
+                // so it travels with the block from here on. Once per computer, never again.
+                boolean repaired = !hasMirror(controller) && mirror(controller, filed);
+                BindStoreMirror.logLoad(STORE, controller.getBlockPos(), repaired, true);
+                if (repaired) {
+                    BindStoreMirror.logMigrateFromTable(STORE, 1);
+                }
+                return filed;
+            }
+            return rebuilt(level, controller, key);
         } catch (Throwable ignored) {
             return "";
+        }
+    }
+
+    /**
+     * Rebuilds the table entry of a computer that has just been copied.
+     *
+     * <p>The copy kept the call sign on its block entity but arrives under a new identity - a new
+     * sub-level id, or a new block position - so the table has nothing under its new key. The name
+     * is read back off the computer, filed under the new key, re-indexed (<em>every</em> identity
+     * the rig can raise a threat under, exactly as {@link #setName} does it) and reported once,
+     * which is what makes a printed ship keep its call sign on the opposing receiver instead of
+     * falling back to a bare threat type.</p>
+     */
+    private static String rebuilt(Level level, StabilizerControllerBlockEntity controller, String key) {
+        String mirrored = mirrored(controller);
+        if (mirrored == null || mirrored.isEmpty()) {
+            BindStoreMirror.logLoad(STORE, controller.getBlockPos(), false, false);
+            return "";
+        }
+        try {
+            ServerLevel server = IffRadar.serverLevelOf(level);
+            if (server == null) {
+                return "";
+            }
+            RadarNameStore store = store(server);
+            store.names.put(key, mirrored);
+            store.index(server, controller, key, mirrored);
+            store.setDirty();
+            BindStoreMirror.logLoad(STORE, controller.getBlockPos(), true, true);
+            BindStoreMirror.logMigrateFromCopy(STORE, 1);
+            return mirrored;
+        } catch (Throwable ignored) {
+            return mirrored;
+        }
+    }
+
+    /**
+     * Files the call sign on the computer itself, so a copy carries it; an empty name drops it.
+     *
+     * <p>A {@link SavedData} is indexed by the platform the computer stands on plus its position,
+     * both of which a blueprint copy changes, so the table is the one place a copy cannot follow.
+     * The computer's block entity is copied whole, so the call sign - and everything derived from
+     * it on the way back in - survives the copy through this.</p>
+     *
+     * @return whether the computer carries the name afterwards
+     */
+    public static boolean mirror(BlockEntity controller, String name) {
+        if (controller == null) {
+            return false;
+        }
+        try {
+            CompoundTag holder = controller.getPersistentData();
+            if (name == null || name.isEmpty()) {
+                if (BindStoreMirror.drop(holder, STORE)) {
+                    controller.setChanged();
+                }
+                return true;
+            }
+            CompoundTag payload = new CompoundTag();
+            payload.putString(MIRROR_NAME, name);
+            if (!BindStoreMirror.file(holder, STORE, payload, controller.getBlockPos())) {
+                return false;
+            }
+            controller.setChanged();
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** The call sign filed on the computer itself, or {@code null} when it carries none. */
+    public static String mirrored(BlockEntity controller) {
+        if (controller == null) {
+            return null;
+        }
+        try {
+            CompoundTag payload = BindStoreMirror.copy(controller.getPersistentData(), STORE);
+            if (payload == null || !payload.contains(MIRROR_NAME)) {
+                return null;
+            }
+            String name = payload.getString(MIRROR_NAME);
+            return name.isEmpty() ? null : name;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** Whether the computer already carries its own copy, so it is never written twice. */
+    private static boolean hasMirror(BlockEntity controller) {
+        try {
+            return controller != null && BindStoreMirror.has(controller.getPersistentData(), STORE);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Files a copy on every loaded computer that has a call sign on the index but not on itself.
+     *
+     * <p>Run once per store, and it is the repair an <em>old</em> world needs: a call sign that was
+     * entered before the copies existed lives only on the index, and a blueprint saved straight
+     * after loading the world - without anyone opening the screen first - would not carry it. The
+     * per-computer path in {@link #nameOf} still repairs whatever this sweep missed, so a read that
+     * happens before any computer is loaded costs one more lazy repair and nothing else.</p>
+     */
+    private static void sweep(Level level) {
+        if (!BindStoreMirror.needsSweep(STORE)) {
+            return;
+        }
+        try {
+            ServerLevel server = IffRadar.serverLevelOf(level);
+            if (server == null) {
+                return;
+            }
+            int seen = 0;
+            int entries = 0;
+            RadarNameStore store = store(server);
+            for (StabilizerControllerBlockEntity controller : ControllerTracker.loadedControllers()) {
+                if (controller == null || controller.isRemoved()) {
+                    continue;
+                }
+                seen++;
+                try {
+                    Level at = controller.getLevel() == null ? server : controller.getLevel();
+                    String name = store.names.get(keyOf(at, controller));
+                    if (name == null || name.isEmpty() || hasMirror(controller)) {
+                        continue;
+                    }
+                    if (mirror(controller, name)) {
+                        entries++;
+                    }
+                } catch (Throwable ignored) {
+                    // one unreadable computer must not cost the others their copy
+                }
+            }
+            if (seen > 0) {
+                BindStoreMirror.sweepDone(STORE);
+            }
+            if (entries > 0) {
+                BindStoreMirror.logMigrateFromTable(STORE, entries);
+            }
+        } catch (Throwable ignored) {
         }
     }
 
@@ -254,9 +421,14 @@ public final class RadarNameStore extends SavedData {
         if (name.isEmpty()) {
             store.names.remove(key);
             store.dropAnchors(key);
+            // The copy goes with the name it copied: a cleared call sign must not come back the
+            // next time this computer is copied.
+            mirror(controller, "");
         } else {
             store.names.put(key, name);
             store.index(level, controller, key, name);
+            // Written on the computer as well, so the call sign rides along with a blueprint copy.
+            mirror(controller, name);
         }
         store.setDirty();
         return true;

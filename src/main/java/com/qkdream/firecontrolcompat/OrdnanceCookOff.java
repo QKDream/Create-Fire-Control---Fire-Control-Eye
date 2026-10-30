@@ -1,6 +1,6 @@
 package com.qkdream.firecontrolcompat;
 
-import com.qkdream.firecontrolcompat.client.MissileVisualSupport;
+import com.qkdream.firecontrolcompat.entity.RemoteVisualState;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.Entity;
@@ -76,7 +76,9 @@ public final class OrdnanceCookOff {
             return false;
         }
         // Rounds still travelling: a landed one has already burst, and the mod's own
-        // long-range proxy is a picture of a round, not a round.
-        return !entity.onGround() && !MissileVisualSupport.isRemoteVisual(entity);
+        // long-range proxy is a picture of a round, not a round. The flag is read from the common
+        // `entity.RemoteVisualState` (it used to come from client/MissileVisualSupport, which made
+        // this server-side explosion listener depend on a client class).
+        return !entity.onGround() && !RemoteVisualState.isRemoteVisual(entity);
     }
 }

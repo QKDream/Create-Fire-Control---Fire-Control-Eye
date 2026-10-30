@@ -18,6 +18,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.saveddata.SavedData;
 
 /**
@@ -76,6 +77,18 @@ public final class SonarSelectInputStore extends SavedData {
     /** Owner key -> the bindings. A computer with none on file carries nothing. */
     private final Map<String, Input> entries = new HashMap<>();
 
+    /**
+     * The same bindings, filed on the computer's own block entity.
+     *
+     * <p>A {@link SavedData} is indexed by the computer's identity, and that identity is its
+     * sub-level id or its coordinates - both of which a blueprint copy changes, so the table is the
+     * one place a copy cannot follow. The computer's block entity, on the other hand, is copied
+     * whole. The table stays the index the page reads and writes; this is the copy a copy carries,
+     * and {@link #of} rebuilds the index from it when the computer comes back under a new identity.
+     * Same two-part shape as {@link SonarRedstonePair}, for the same reason.</p>
+     */
+    public static final String MIRROR_KEY = "firecontrolcompat:sonar_select";
+
     public static SonarSelectInputStore load(CompoundTag tag, HolderLookup.Provider registries) {
         SonarSelectInputStore store = new SonarSelectInputStore();
         CompoundTag stored = tag.getCompound("inputs");
@@ -113,10 +126,124 @@ public final class SonarSelectInputStore extends SavedData {
             return plain();
         }
         try {
-            Input input = table(level).get(RadarNameStore.keyOf(level, controller));
-            return input == null ? plain() : input;
+            String key = RadarNameStore.keyOf(level, controller);
+            Input filed = table(level).get(key);
+            if (filed != null) {
+                // A world bound before the copy existed: file it on the computer now, so the
+                // bindings travel from here on. Once per computer, and never again.
+                if (!hasMirror(controller) && mirror(controller, filed)) {
+                    FireControlCompat.LOGGER.info(
+                            "sonar-binding: migrate saveddata->nbt be={} entries=1",
+                            controller.getBlockPos().toShortString());
+                }
+                return filed;
+            }
+            return rebuild(level, controller, key);
         } catch (Throwable ignored) {
             return plain();
+        }
+    }
+
+    /**
+     * Rebuilds the table entry of a computer that has just been copied.
+     *
+     * <p>The copy kept the bindings on its block entity but arrives under a new identity, so the
+     * table has nothing under its new key. The bindings are read back off the computer, filed under
+     * the new key and reported once, which is what makes a printed ship answer to the same sonar
+     * channels without being set up again.</p>
+     */
+    private static Input rebuild(Level level, StabilizerControllerBlockEntity controller, String key) {
+        Input mirrored = mirrored(controller);
+        if (mirrored == null || !mirrored.configured()) {
+            return plain();
+        }
+        try {
+            SonarSelectInputStore store = storeOf(level);
+            if (store != null) {
+                store.entries.put(key, mirrored);
+                store.setDirty();
+            }
+            FireControlCompat.LOGGER.info(
+                    "sonar-binding: migrate nbt->index be={} entries=1",
+                    controller.getBlockPos().toShortString());
+        } catch (Throwable ignored) {
+        }
+        return mirrored;
+    }
+
+    /** Files the bindings on the computer itself; {@code false} when it could not be written. */
+    public static boolean mirror(BlockEntity controller, Input input) {
+        if (controller == null || input == null) {
+            return false;
+        }
+        try {
+            net.minecraft.core.HolderLookup.Provider registries = registries(controller);
+            if (registries == null) {
+                return false;
+            }
+            CompoundTag stored = new CompoundTag();
+            stored.put("first", normalize(input.first()).saveOptional(registries));
+            stored.put("second", normalize(input.second()).saveOptional(registries));
+            stored.putString("normal", input.normalKey() == null ? "" : input.normalKey());
+            stored.putString("advanced", input.advancedKey() == null ? "" : input.advancedKey());
+            stored.putString("wireless", input.wirelessKey() == null ? "" : input.wirelessKey());
+            controller.getPersistentData().put(MIRROR_KEY, stored);
+            controller.setChanged();
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** The bindings filed on the computer itself, or {@code null} when it carries none. */
+    public static Input mirrored(BlockEntity controller) {
+        if (controller == null) {
+            return null;
+        }
+        try {
+            CompoundTag data = controller.getPersistentData();
+            if (!data.contains(MIRROR_KEY)) {
+                return null;
+            }
+            CompoundTag stored = data.getCompound(MIRROR_KEY);
+            net.minecraft.core.HolderLookup.Provider registries = registries(controller);
+            if (registries == null) {
+                return null;
+            }
+            return new Input(
+                    ItemStack.parseOptional(registries, stored.getCompound("first")),
+                    ItemStack.parseOptional(registries, stored.getCompound("second")),
+                    stored.getString("normal"),
+                    stored.getString("advanced"),
+                    stored.getString("wireless"));
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static boolean hasMirror(BlockEntity controller) {
+        try {
+            return controller != null && controller.getPersistentData().contains(MIRROR_KEY);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static ItemStack normalize(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return ItemStack.EMPTY;
+        }
+        ItemStack one = stack.copy();
+        one.setCount(1);
+        return one;
+    }
+
+    private static net.minecraft.core.HolderLookup.Provider registries(BlockEntity controller) {
+        try {
+            Level level = controller == null ? null : controller.getLevel();
+            return level == null ? null : level.registryAccess();
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
@@ -222,7 +349,10 @@ public final class SonarSelectInputStore extends SavedData {
             ServerLevel level = player.serverLevel();
             SonarSelectInputStore store = store(level);
             String key = RadarNameStore.keyOf(level, controller);
-            store.entries.put(key, change.apply(of(level, controller)));
+            Input updated = change.apply(of(level, controller));
+            store.entries.put(key, updated);
+            // Written on the computer as well, so the bindings ride along with a blueprint copy.
+            mirror(controller, updated);
             store.setDirty();
             return true;
         } catch (Throwable ignored) {

@@ -2,14 +2,7 @@ package com.qkdream.firecontrolcompat.client.yuushya;
 
 import com.qkdream.firecontrolcompat.FireControlCompat;
 import com.qkdream.firecontrolcompat.compat.yuushya.YuushyaBigCannonCompat;
-import com.yuushya.modelling.client.NeoShowBlockModel;
-import net.minecraft.client.renderer.block.BlockModelShaper;
-import net.minecraft.client.resources.model.BakedModel;
-import net.minecraft.client.resources.model.ModelResourceLocation;
-import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -25,6 +18,13 @@ import net.neoforged.neoforge.client.event.ModelEvent;
  * swap is done here for the barrel block as well - without it the barrel would
  * show up as an empty block and the model the player put inside it would be
  * invisible.</p>
+ *
+ * <h2>Optional dependency (1.70.6)</h2>
+ *
+ * <p>The first line is the mod-loaded check, and everything that names a Yuushya Modelling class
+ * lives in {@link YuushyaBarrelModelSwap}, which is only loaded after that check has passed. This
+ * class is registered for <b>every</b> client, so without the split a pack without the modelling
+ * mod threw {@code NoClassDefFoundError} at the first model bake.</p>
  */
 @EventBusSubscriber(modid = FireControlCompat.MOD_ID, value = Dist.CLIENT, bus = EventBusSubscriber.Bus.MOD)
 public final class YuushyaBigCannonClient {
@@ -34,20 +34,16 @@ public final class YuushyaBigCannonClient {
 
     @SubscribeEvent
     public static void onModifyBakingResult(ModelEvent.ModifyBakingResult event) {
+        if (!YuushyaBigCannonCompat.isAvailable()) {
+            YuushyaBigCannonCompat.logCompatSkippedOnce("model-swap");
+            return;
+        }
         Block barrel = YuushyaBigCannonCompat.SHOW_BIG_CANNON_BARREL == null
                 ? null
                 : YuushyaBigCannonCompat.SHOW_BIG_CANNON_BARREL.get();
         if (barrel == null) {
             return;
         }
-        for (BlockState state : barrel.getStateDefinition().getPossibleStates()) {
-            ModelResourceLocation location = BlockModelShaper.stateToModelLocation(state);
-            BakedModel original = event.getModels().get(location);
-            if (original == null) {
-                continue;
-            }
-            Direction facing = state.getValue(BlockStateProperties.HORIZONTAL_FACING);
-            event.getModels().put(location, new NeoShowBlockModel(facing, original));
-        }
+        YuushyaBarrelModelSwap.apply(event, barrel);
     }
 }

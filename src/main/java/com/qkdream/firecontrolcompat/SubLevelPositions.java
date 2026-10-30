@@ -272,13 +272,25 @@ public final class SubLevelPositions {
 
     /** The space of the sub-level seen at a world position, or {@code null} when there is none. */
     public static BlockSpace plotSpace(Level level, Vec3 world) {
+        return plotSpace(level, world, null);
+    }
+
+    /**
+     * The same, with the main level already resolved by the caller.
+     *
+     * <p>Resolving the root level means a Sable container walk, and a radar asks for both the root
+     * space and the plot space in one sweep: passing the answer in turns two container walks into
+     * one. {@code null} means "resolve it yourself", so this is the same call as the two-argument
+     * form for every other caller.</p>
+     */
+    public static BlockSpace plotSpace(Level level, Vec3 world, Level knownRoot) {
         if (level == null || world == null) {
             return null;
         }
         try {
             SubLevel subLevel = Sable.HELPER.getContaining(level, world);
             if (subLevel == null || subLevel.isRemoved()) {
-                Level root = rootLevel(level);
+                Level root = knownRoot != null ? knownRoot : rootLevel(level);
                 if (root != null && root != level) {
                     subLevel = Sable.HELPER.getContaining(root, world);
                 }

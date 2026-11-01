@@ -1104,7 +1104,22 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         }
         double cosine = Mth.clamp((dx * velocity.x + dy * velocity.y + dz * velocity.z) / (distance * speed), -1.0, 1.0);
         double angle = Math.acos(cosine);
-        if (engine <= STEERING_START_TICK || angle <= 1.0E-4) {
+        if (angle <= 1.0E-4) {
+            return;
+        }
+        // The infrared anti-tank round is capped by its own leg rate on top of the overload law.
+        // That law is written for a round doing seventeen blocks a tick; at the one to two blocks a
+        // tick this round flies it allows tens of degrees a tick, which is what turned a leg change
+        // into a corner in the sky. The cap only ever tightens the limit - the overload law and the
+        // wide-authority factor below still apply - and it answers a non-positive number for every
+        // other round, so no other missile's steering changes.
+        //
+        // It is read here, before the steering-start gate, because it also says whether this round
+        // is exempt from that gate: a positive answer means the round has a launch leg of its own
+        // (see IrAtgm.LAUNCH_STIFF_TICKS), and its whole first leg is a nose swing off the rail, so
+        // two ticks of no steering at all is exactly the "先僵一下" this round was reported for.
+        double legLimit = com.qkdream.firecontrolcompat.IrAtgm.turnLimitDegrees(this);
+        if (engine <= STEERING_START_TICK && legLimit <= 0.0D) {
             return;
         }
         // Overload G means a lateral acceleration of G * 9.8 blocks/s^2, which
@@ -1124,13 +1139,8 @@ public class BeamRidingMissileEntity extends AbstractArrow implements ItemSuppli
         if (this.hasLaunchBoost() && engine <= BOOST_TURN_TICKS) {
             maxTurnRadians = Math.max(maxTurnRadians, BOOST_TURN_RADIANS_PER_TICK);
         }
-        // The infrared anti-tank round is capped by its own leg rate on top of the overload law.
-        // That law is written for a round doing seventeen blocks a tick; at the one to two blocks a
-        // tick this round flies it allows tens of degrees a tick, which is what turned a leg change
-        // into a corner in the sky. The cap only ever tightens the limit - the overload law and the
-        // wide-authority factor above still apply - and it answers a non-positive number for every
-        // other round, so no other missile's steering changes.
-        double legLimit = com.qkdream.firecontrolcompat.IrAtgm.turnLimitDegrees(this);
+        // The round's own leg rate (read above, before the steering-start gate) is applied on top
+        // of the overload law: it only ever tightens the limit.
         if (legLimit > 0.0D) {
             maxTurnRadians = Math.min(maxTurnRadians, Math.toRadians(legLimit));
         }

@@ -3,12 +3,14 @@ package com.qkdream.firecontrolcompat;
 import com.qkdream.firecontrolcompat.entity.InfraredMissileEntity;
 import com.qkdream.firecontrolcompat.laser.LaserSpots;
 import java.util.Locale;
+import java.util.UUID;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Position;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 /**
@@ -79,6 +81,53 @@ public final class IrAtgm {
     private static final String PHASE_TAG = "firecontrolcompat:atgm_phase";
     private static final String PHASE_TICKS_TAG = "firecontrolcompat:atgm_phase_ticks";
 
+    /**
+     * The entity the lock was resolved to, when one could be resolved.
+     *
+     * <p>A designation is a point: a pod paint, an optical lock, a ground-target snapshot and a
+     * radar contact all arrive here as a {@link Vec3}, and none of them carries the entity it was
+     * read from. The point is enough to fly the profile, but not enough to aim at the target's
+     * <b>middle</b>: a snapshot taken on a roof, or a radar contact on a hull's top face, is a
+     * surface point, so the dive used to stop at the skin of the thing. This tag is the entity the
+     * point was matched to at release, so every tick of the terminal legs can aim at
+     * {@code getBoundingBox().getCenter()} instead - and a lock that matched nothing keeps the
+     * snapshot point it always had.</p>
+     */
+    private static final String TARGET_UUID_TAG = "firecontrolcompat:atgm_target_uuid";
+
+    /**
+     * How far from the locked point an entity may sit and still be taken as that lock, in blocks.
+     *
+     * <p>Measured to the entity's <b>box</b>, not to its centre, so a point on a roof is zero blocks
+     * from the building under it and a point on the ground is zero blocks from the vehicle standing
+     * on it. Kept tight on purpose: a designation is a place, and an entity four blocks away from
+     * that place is not what the gunner locked.</p>
+     */
+    private static final double TARGET_SEARCH_RADIUS = 4.0D;
+
+    /** Ticks between two {@code ir-atgm aim:} lines while the round is in its terminal legs. */
+    private static final int AIM_REPORT_INTERVAL = 20;
+
+    /**
+     * Times the terminal legs may look for the target entity again, when the release could not.
+     *
+     * <p>The release-time search reads the level around the locked point, and a lock four hundred
+     * blocks out is routinely in a chunk that is not loaded at the rail - the entity is simply not
+     * there to be found yet. By the time the round is in its dive the target is a few blocks away and
+     * its chunk is definitely loaded, so the search is retried there a handful of times and then
+     * given up on: a lock on bare ground must not cost a level sweep on every tick of the dive.</p>
+     */
+    private static final int TARGET_BIND_MAX_TRIES = 8;
+
+    /** Ticks between two late attempts at binding the target entity. */
+    private static final int TARGET_BIND_RETRY_TICKS = 10;
+
+    /** Late binding attempts made so far. */
+    private static final String TARGET_BIND_TRIES_TAG = "firecontrolcompat:atgm_bind_tries";
+
+    /** Ticks this round has counted for its own aim-point report. */
+    private static final String AIM_TICKS_TAG = "firecontrolcompat:atgm_aim_ticks";
+
     /** How high above the locked point the round crosses the target, in blocks. */
     public static final double CLIMB_HEIGHT = 26.0D;
 
@@ -129,6 +178,61 @@ public final class IrAtgm {
 
     /** Turn limit in the dive and the terminal correction, in degrees per tick. */
     public static final double DIVE_TURN_DEGREES = 5.0D;
+
+    /**
+     * Ticks after release during which the round's own launch window runs, in ticks.
+     *
+     * <h2>Why there is a launch window at all</h2>
+     *
+     * <p>Every leg's rate limit is a <b>flight</b> limit: four degrees a tick on the pop-up is what
+     * stops a leg change from being a corner in the sky. Applied to the very first tick of the
+     * flight it is the wrong law, because at the rail there is no leg to change - the round leaves
+     * the tube roughly level and the pop-up wants sixty-five degrees, so a four degree limit spends
+     * about fifteen ticks flying flat at a contact it is not yet pointing at. That is the "先僵一下
+     * 再拐" the user reported: a stiff round that starts turning late.</p>
+     *
+     * <p>So the first {@code LAUNCH_TURN_TICKS} ticks of the flight are flown under
+     * {@link #LAUNCH_TURN_DEGREES} instead, and the leg limit takes over the moment the window
+     * closes. The climb pitch, the ceiling, {@link #PULLDOWN_RANGE} and the dive are untouched: only
+     * how fast the nose is allowed to arrive at the climb bearing changes.</p>
+     */
+    public static final int LAUNCH_TURN_TICKS = 8;
+
+    /**
+     * Turn limit inside the launch window, in degrees per tick.
+     *
+     * <p>Three times the pop-up's own four: sixty-five degrees of nose swing is then flown out in
+     * about six ticks instead of sixteen, while the round still turns along an arc rather than
+     * snapping (a leg change is still capped by the leg's own limit for the whole flight after the
+     * window).</p>
+     */
+    public static final double LAUNCH_TURN_DEGREES = 12.0D;
+
+    /**
+     * Speed held through the launch window, in blocks per tick.
+     *
+     * <p>The pop-up leg's own 1.4 is the slowest of the three, and it used to be applied from the
+     * first tick - so the round both turned slowly <em>and</em> crawled while it did. The window
+     * flies it at the cruise speed instead, which shortens the flat stretch the nose takes to come
+     * up (about twenty blocks of run before the climb was established, now about ten) without
+     * changing the climb angle: the pop-up is the same sixty-five degree line, just reached sooner.
+     * </p>
+     */
+    public static final double LAUNCH_SPEED = 2.0D;
+
+    /**
+     * Ticks after release during which this round has <b>no</b> steering authority at all, in ticks.
+     *
+     * <p>Was the base class's own {@code STEERING_START_TICK = 2}, which every missile in the pack
+     * shares. This round is the only one whose first leg is a nose swing from the rail, so it is
+     * exempted from that delay and steers from its first flight tick: 2 -> <b>0</b>. The exemption is
+     * asked for by {@link #turnLimitDegrees} answering a positive number, so no other round loses
+     * the delay.</p>
+     */
+    public static final int LAUNCH_STIFF_TICKS = 0;
+
+    /** Tick the round was released on, so the launch window is measured in game ticks, not calls. */
+    private static final String LAUNCH_TICK_TAG = "firecontrolcompat:atgm_launch_tick";
 
     /** Ticks between two steering reports. */
     private static final int STEER_REPORT_INTERVAL = 10;
@@ -343,10 +447,233 @@ public final class IrAtgm {
         data.remove(NAV_TICKS_TAG);
         data.remove(NAV_FIX_TAG);
         data.remove(STEER_TICKS_TAG);
+        data.remove(AIM_TICKS_TAG);
+        // The launch window is measured from the release, on the level's own clock, so a round that
+        // is handed to a mathematical flight (whose tick counter is parked) still leaves its window
+        // on time.
+        noteReleaseTick(round, data);
         // The close-target decision is made once, here, from the release geometry: it is the only
         // moment the distance between the rail and the lock is known before the round moves.
         noteReleaseRange(round, target);
+        // The entity behind the designation, resolved once at the rail: every terminal tick then
+        // aims at its box centre instead of at the surface point the lock happened to carry.
+        bindTargetEntity(round, target);
         round.setBaseDamage(round.getBaseDamage() + 6.0F);
+        reportImpactPoint(round, target, "RELEASE");
+    }
+
+    /** Stamps the release tick, and the pop-up the round has to fly from the heading it left with. */
+    private static void noteReleaseTick(Entity round, CompoundTag data) {
+        try {
+            Level level = round.level();
+            if (level != null) {
+                data.putLong(LAUNCH_TICK_TAG, level.getGameTime());
+            }
+        } catch (Throwable ignored) {
+            // A round without the stamp simply has no launch window and flies the leg limits.
+        }
+    }
+
+    /**
+     * Ticks since this round was released, or {@code -1} when the release was never stamped.
+     *
+     * <p>Read off the level's game time rather than off a counter this class increments: the round
+     * can be ticked by the entity path, by fire control's mathematical path or by both, and only the
+     * level's own clock gives the same answer on all three.</p>
+     */
+    private static long launchAgeTicks(Entity round) {
+        try {
+            if (round == null || round.level() == null) {
+                return -1L;
+            }
+            CompoundTag data = round.getPersistentData();
+            if (!data.contains(LAUNCH_TICK_TAG)) {
+                return -1L;
+            }
+            return round.level().getGameTime() - data.getLong(LAUNCH_TICK_TAG);
+        } catch (Throwable ignored) {
+            return -1L;
+        }
+    }
+
+    /** Whether this round is still inside its launch window (see {@link #LAUNCH_TURN_TICKS}). */
+    public static boolean inLaunchWindow(Entity round) {
+        if (!isTopAttack(round)) {
+            return false;
+        }
+        long age = launchAgeTicks(round);
+        return age >= 0L && age < LAUNCH_TURN_TICKS;
+    }
+
+    /**
+     * Files the entity the lock belongs to, so the terminal legs can aim at its geometric centre.
+     *
+     * <p>The designation is only ever a point, so the entity is looked for <b>at</b> that point: the
+     * nearest live entity whose box is within {@link #TARGET_SEARCH_RADIUS} blocks of it wins, and
+     * nothing is stored when no entity is that close. A round released on a spot on the ground with
+     * nothing standing on it therefore behaves exactly as before - it flies the snapshot.</p>
+     */
+    private static void bindTargetEntity(Entity round, Vec3 target) {
+        try {
+            Level level = round.level();
+            if (!(level instanceof ServerLevel server) || !finite(target)) {
+                return;
+            }
+            AABB search = new AABB(target, target).inflate(TARGET_SEARCH_RADIUS);
+            Entity best = null;
+            double bestDistance = Double.MAX_VALUE;
+            for (Entity candidate : server.getEntities(round,
+                    search, entity -> entity != null && entity.isAlive() && !entity.isRemoved()
+                            && !entity.isSpectator())) {
+                double distance = distanceToBox(candidate.getBoundingBox(), target);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    best = candidate;
+                }
+            }
+            if (best == null) {
+                return;
+            }
+            round.getPersistentData().putUUID(TARGET_UUID_TAG, best.getUUID());
+            FireControlCompat.LOGGER.info(
+                    "{}ir-atgm target: bound entity={} type={} box={} centre={} lock={} off={}",
+                    PREFIX, best.getUUID(), best.getType().toShortString(), best.getBoundingBox(),
+                    best.getBoundingBox().getCenter(), target,
+                    String.format(Locale.ROOT, "%.2f", bestDistance));
+        } catch (Throwable ignored) {
+            // A lock that cannot be matched to an entity is flown as the point it carries.
+        }
+    }
+
+    /** Distance from a point to the nearest face of a box, in blocks; zero inside it. */
+    private static double distanceToBox(AABB box, Vec3 point) {
+        double dx = Math.max(Math.max(box.minX - point.x, 0.0D), point.x - box.maxX);
+        double dy = Math.max(Math.max(box.minY - point.y, 0.0D), point.y - box.maxY);
+        double dz = Math.max(Math.max(box.minZ - point.z, 0.0D), point.z - box.maxZ);
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    /**
+     * One more try at finding the target entity, in the legs that actually arrive.
+     *
+     * <p>A lock four hundred blocks out is often in a chunk that is not loaded at the rail, so the
+     * release-time search finds nothing and the round would fly the snapshot for the whole shot. By
+     * the dive the target is right there and its chunk is loaded, so the search is repeated a few
+     * times - throttled, and capped by {@link #TARGET_BIND_MAX_TRIES} - and then left alone: a lock
+     * on bare ground must not cost a level sweep on every tick.</p>
+     */
+    private static void rebindLate(Entity round, Vec3 lock, Phase phase, Phase previous, int held) {
+        try {
+            CompoundTag data = round.getPersistentData();
+            if (data.contains(TARGET_UUID_TAG)) {
+                return;
+            }
+            if (phase == previous && held % TARGET_BIND_RETRY_TICKS != 0) {
+                return;
+            }
+            int tries = data.getInt(TARGET_BIND_TRIES_TAG);
+            if (tries >= TARGET_BIND_MAX_TRIES) {
+                return;
+            }
+            data.putInt(TARGET_BIND_TRIES_TAG, tries + 1);
+            bindTargetEntity(round, lock);
+        } catch (Throwable ignored) {
+            // a round that will not take the retry flies the snapshot it has
+        }
+    }
+
+    /**
+     * The point the round should actually hit, with the mode it was worked out in.
+     *
+     * <p><b>Entity locked</b> - the target's own box centre, read fresh every tick, so a vehicle that
+     * drives during the climb is still met in its middle and the dive goes <em>through</em> the top
+     * of the hull instead of stopping on it. <b>Snapshot only</b> - the point the designation carried,
+     * which is all there is when the lock was a pod paint, a radar contact or an entity that has since
+     * died. Both keep the approach from above: the aim point is the entry point, the geometry only
+     * decides how deep the round is aiming.</p>
+     */
+    private static Impact impactOf(Entity round, Vec3 snapshot) {
+        String label = pointLabel(snapshot);
+        try {
+            Level level = round == null ? null : round.level();
+            CompoundTag data = round == null ? null : round.getPersistentData();
+            if (level instanceof ServerLevel server && data != null && data.contains(TARGET_UUID_TAG)) {
+                UUID id = data.getUUID(TARGET_UUID_TAG);
+                if (id != null) {
+                    label = id.toString();
+                    Entity target = server.getEntity(id);
+                    if (target != null && target.isAlive() && !target.isRemoved()) {
+                        Vec3 centre = target.getBoundingBox().getCenter();
+                        // The same space guard the lock itself is flown under: a centre twenty
+                        // million blocks away is a Sable plot mix-up, not an aim point.
+                        if (finite(centre)
+                                && centre.distanceTo(round.position()) <= SPACE_SUSPECT_DISTANCE) {
+                            return new Impact(centre, "geometry", label);
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // fall through to the snapshot
+        }
+        return new Impact(snapshot, "snapshot", label);
+    }
+
+    /** The point to hit and where it came from: {@code geometry} (a box centre) or {@code snapshot}. */
+    private record Impact(Vec3 point, String mode, String target) {
+    }
+
+    /** A point in the shape the aim line prints it, so a UUID and a coordinate read alike. */
+    private static String pointLabel(Vec3 point) {
+        if (point == null) {
+            return "-";
+        }
+        return String.format(Locale.ROOT, "(%.2f,%.2f,%.2f)", point.x, point.y, point.z);
+    }
+
+    /**
+     * One {@code ir-atgm aim:} line: what the round is aiming at, where the centre of it is, and
+     * whether that centre came from an entity's box or from the point the designation carried.
+     *
+     * <p>This is the line the "打在几何中心" request is graded by: a shot on a locked vehicle has to
+     * print {@code mode=geometry} in the dive, and a shot on bare ground has to print
+     * {@code mode=snapshot} with the same point it was released against. Throttled by a per-round
+     * counter (never by a subtraction from {@code Long.MIN_VALUE}), plus one line on every phase
+     * change.</p>
+     */
+    private static void reportImpactPoint(Entity round, Vec3 snapshot, String phase) {
+        if (round == null) {
+            return;
+        }
+        try {
+            Impact impact = impactOf(round, snapshot);
+            reportAim(round, impact, snapshot, phase, true);
+        } catch (Throwable ignored) {
+            // a diagnostic line is never worth a crash
+        }
+    }
+
+    /** Emits one aim line, throttled; {@code force} prints it on a phase change. */
+    private static void reportAim(Entity round, Impact impact, Vec3 snapshot, String phase,
+            boolean force) {
+        try {
+            CompoundTag data = round.getPersistentData();
+            int ticks = data.getInt(AIM_TICKS_TAG) + 1;
+            data.putInt(AIM_TICKS_TAG, ticks);
+            if (!force && ticks % AIM_REPORT_INTERVAL != 0) {
+                return;
+            }
+            Vec3 centre = impact.point();
+            FireControlCompat.LOGGER.info(
+                    "{}ir-atgm aim: target={} centre={} mode={} top-attack={} phase={} snapshot={}"
+                            + " range={}",
+                    PREFIX, impact.target(),
+                    String.format(Locale.ROOT, "(%.2f,%.2f,%.2f)", centre.x, centre.y, centre.z),
+                    impact.mode(), isTopAttack(round), phase, snapshot,
+                    String.format(Locale.ROOT, "%.1f", centre.distanceTo(round.position())));
+        } catch (Throwable ignored) {
+            // a diagnostic line is never worth a crash
+        }
     }
 
     /**
@@ -500,7 +827,12 @@ public final class IrAtgm {
             if (phase != previous || held % PHASE_REPORT_INTERVAL == 0) {
                 reportPhase(round, phase, previous, lock, horizontal, ceiling);
             }
-            return closeAim(lock, horizontal);
+            // What the round is aiming to hit: the target's box centre when the lock resolved to an
+            // entity, the snapshot point when it did not (see {@link #impactOf}).
+            Impact impact = impactOf(round, lock);
+            reportAim(round, impact, lock, phase.name(),
+                    phase != previous || held % PHASE_REPORT_INTERVAL == 0);
+            return closeAim(impact.point(), horizontal);
         }
         Phase phase = nextPhase(previous, round, lock, horizontal, ceiling, held);
         reportNav(round, aim, phase, horizontal);
@@ -512,7 +844,18 @@ public final class IrAtgm {
             // "the round climbed and the log only recorded the transition" have to be told apart.
             reportPhase(round, phase, previous, lock, horizontal, ceiling);
         }
-        return aimFor(phase, round, lock, base, dx, dz, horizontal, ceiling);
+        if (phase == Phase.DIVE || phase == Phase.TERMINAL) {
+            // The legs that actually arrive: one line on entering each, then one every
+            // AIM_REPORT_INTERVAL ticks, saying which point the round is coming down on. The climb
+            // and the run-in never reach the target, so they do not pay for the lookup at all.
+            rebindLate(round, lock, phase, previous, held);
+            Impact arriving = impactOf(round, lock);
+            reportAim(round, arriving, lock, phase.name(), phase != previous);
+            return aimFor(phase, round, arriving.point(), lock, base, dx, dz, horizontal, ceiling);
+        }
+        // Climbing and running in: the leg wants the locked point itself (the ceiling, the bearing),
+        // never the impact point.
+        return aimFor(phase, round, lock, lock, base, dx, dz, horizontal, ceiling);
     }
 
     /**
@@ -677,9 +1020,19 @@ public final class IrAtgm {
         return new Vec3(lock.x, lock.y + lift, lock.z);
     }
 
-    /** The point each leg asks for. */
-    private static Vec3 aimFor(Phase phase, Entity round, Vec3 lock, Vec3 base, double dx, double dz,
-            double horizontal, double ceiling) {
+    /**
+     * The point each leg asks for.
+     *
+     * <p>{@code lock} is the point the designation carried and stays the reference for the legs that
+     * build the shape (the ceiling is {@code lock.y + CLIMB_HEIGHT}). {@code impact} is what the
+     * round is coming down on - the target's box centre when the lock was resolved to an entity, the
+     * snapshot point otherwise - and only the legs that arrive use it: the dive and the terminal
+     * correction, plus the close shot's direct leg. That is the whole of the "aim at the geometric
+     * centre" change: the approach is still from above at the same angles, the entry point is the
+     * middle of the thing instead of a point on its skin.</p>
+     */
+    private static Vec3 aimFor(Phase phase, Entity round, Vec3 impact, Vec3 lock, Vec3 base,
+            double dx, double dz, double horizontal, double ceiling) {
         if (phase == null) {
             return base;
         }
@@ -708,12 +1061,13 @@ public final class IrAtgm {
                 return new Vec3(lock.x, ceiling, lock.z);
             }
             case DIVE -> {
-                return lock;
+                // Straight down onto the middle of the target, from the ceiling it is crossing.
+                return impact;
             }
             default -> {
-                // Last correction: the lock, pulled toward the seeker's track so a moving target is
-                // still hit.
-                return base != null ? blend(lock, base) : lock;
+                // Last correction: the impact point, pulled toward the seeker's track so a moving
+                // target is still hit in the middle.
+                return base != null ? blend(impact, base) : impact;
             }
         }
     }
@@ -790,8 +1144,17 @@ public final class IrAtgm {
         return lock.add(track.subtract(lock).scale(0.5D));
     }
 
-    /** The speed this round should be flying, from the leg it is on, in blocks per tick. */
+    /**
+     * The speed this round should be flying, from the leg it is on, in blocks per tick.
+     *
+     * <p>The launch window is the one exception: for its first {@link #LAUNCH_TURN_TICKS} ticks the
+     * round is flown at {@link #LAUNCH_SPEED} rather than at the pop-up's own 1.4, so the nose swing
+     * off the rail and the start of the climb are not also the slowest part of the shot.</p>
+     */
     public static double speedFor(Entity round) {
+        if (inLaunchWindow(round)) {
+            return LAUNCH_SPEED;
+        }
         return speedFor(phaseOf(round));
     }
 
@@ -813,14 +1176,28 @@ public final class IrAtgm {
      *
      * <p>Answered per leg, and only for a round carrying {@link #TOP_ATTACK_TAG}: every other round
      * of this mod's family keeps the base class's overload law untouched, so a change here can never
-     * make an air-defence round or a beam rider turn worse. The caller clamps its own limit with this
+     * make an air-defense round or a beam rider turn worse. The caller clamps its own limit with this
      * one - never replaces it - so the tighter of the two always wins.</p>
+     *
+     * <p>Inside the launch window (see {@link #LAUNCH_TURN_TICKS}) the answer is the higher of the
+     * leg's own limit and {@link #LAUNCH_TURN_DEGREES}: the round has just left a rail pointing
+     * roughly level and the pop-up wants sixty-five degrees, so the first few ticks are the one part
+     * of the flight where the leg limit is the wrong law. The window closes on its own and the leg
+     * limits then apply for the rest of the shot, unchanged.</p>
      */
     public static double turnLimitDegrees(Entity round) {
         if (!isTopAttack(round)) {
             return -1.0D;
         }
-        Phase phase = phaseOf(round);
+        double leg = legTurnLimitDegrees(phaseOf(round));
+        if (inLaunchWindow(round)) {
+            return Math.max(leg, LAUNCH_TURN_DEGREES);
+        }
+        return leg;
+    }
+
+    /** The leg's own rate limit, in degrees per tick; {@code null} means "not decided yet". */
+    private static double legTurnLimitDegrees(Phase phase) {
         if (phase == null) {
             return CLIMB_TURN_DEGREES;
         }
@@ -941,6 +1318,42 @@ public final class IrAtgm {
                 "{}ir-atgm: locked=true target={} launch={} top-attack={} damage=heat round={}",
                 PREFIX, target, round == null ? null : round.position(), topAttack,
                 round == null ? "-" : Integer.toString(round.getId()));
+        reportLaunchWindow(round);
+    }
+
+    /**
+     * The launch line: how long the round is stiff, how fast it may swing its nose and how fast it
+     * leaves, with the pop-up that has to be flown from the heading it actually left with.
+     *
+     * <p>{@code stiff-ticks} is the count of ticks after release with no steering authority at all;
+     * {@code turn-limit} is the limit the launch window answers with, {@code speed} the speed it
+     * holds; {@code popup-ticks} is {@code (CLIMB_PITCH_DEG - release pitch) / turn-limit} rounded
+     * up, which is how long the nose takes to arrive at the climb bearing. It is the number the
+     * "先僵一下再拐" report was about: sixteen ticks before, about six now.</p>
+     */
+    private static void reportLaunchWindow(Entity round) {
+        if (round == null) {
+            return;
+        }
+        try {
+            double launchPitch = 0.0D;
+            Vec3 velocity = round.getDeltaMovement();
+            if (velocity != null && velocity.lengthSqr() > 1.0E-8D) {
+                double flat = Math.hypot(velocity.x, velocity.z);
+                launchPitch = Math.toDegrees(Math.atan2(velocity.y, Math.max(flat, 1.0E-6D)));
+            }
+            double swing = Math.max(0.0D, CLIMB_PITCH_DEG - launchPitch);
+            FireControlCompat.LOGGER.info(
+                    "{}ir-atgm launch: stiff-ticks={} turn-limit={}deg speed={} window={}t"
+                            + " popup={}deg popup-ticks={} climb-speed={} close-limit={}",
+                    PREFIX, LAUNCH_STIFF_TICKS, String.format(Locale.ROOT, "%.1f", LAUNCH_TURN_DEGREES),
+                    String.format(Locale.ROOT, "%.2f", LAUNCH_SPEED), LAUNCH_TURN_TICKS,
+                    String.format(Locale.ROOT, "%.1f", swing),
+                    (int) Math.ceil(swing / LAUNCH_TURN_DEGREES),
+                    String.format(Locale.ROOT, "%.2f", CLIMB_SPEED), (int) CLOSE_TARGET_RANGE);
+        } catch (Throwable ignored) {
+            // a diagnostic line is never worth a crash
+        }
     }
 
     private static boolean finite(Vec3 vector) {

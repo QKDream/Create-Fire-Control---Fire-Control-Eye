@@ -279,9 +279,11 @@ public final class BlueprintBake {
             try {
                 BlueprintExporter.NOTES.clear();
                 int tris = bake(nbt);
-                Path obj = outputDir().resolve(stem(nbt) + ".obj");
+                Path obj = exportDir(stem(nbt)).resolve(exportFolderName(stem(nbt)) + ".obj");
                 source.sendSuccess(() -> Component.literal(
                     "sableexport: " + obj + " (" + tris + " faces)"), false);
+                source.sendSuccess(() -> Component.literal(
+                    "  export dir: " + obj.getParent()), false);
                 // Surface anything that went wrong but did not stop the export, in the
                 // chat where it will actually be read. A silently untextured mesh is
                 // otherwise indistinguishable from a bug in Blender's importer.
@@ -354,6 +356,150 @@ public final class BlueprintBake {
         Path out = Minecraft.getInstance().gameDirectory.toPath().resolve("sable_export");
         Files.createDirectories(out);
         return out;
+    }
+
+    /**
+     * The folder one export owns: {@code sable_export/<name>/}.
+     *
+     * <p>Every export used to be written into {@code sable_export} itself, so the second export's
+     * {@code textures/**} landed on the first one's and a model's material could end up pointing at
+     * a file another export had since rewritten - the two most recent files on disk prove it, with
+     * {@code textures/block/hub.png} referenced by both {@code .mtl} files and rewritten at the
+     * second export's timestamp. A folder per export makes that impossible by construction and
+     * keeps every path inside the {@code .mtl} relative, so Blender still resolves
+     * {@code textures/...} against the {@code .mtl}'s own directory.
+     */
+    public static Path exportDir(String name) throws IOException {
+        Path dir = outputDir().resolve(exportFolderName(name));
+        Files.createDirectories(dir);
+        return dir;
+    }
+
+    /**
+     * A folder name that is legal on Windows, macOS and Linux.
+     *
+     * <p>An export name comes from a blueprint's file name or from a region name the player typed,
+     * so it can carry a separator, a wildcard or a colon - all of which either fail or create a
+     * folder somewhere else entirely. Trailing dots and spaces are stripped too, because Windows
+     * silently drops them and the folder in the log would not be the folder on disk.
+     */
+    public static String exportFolderName(String name) {
+        String value = name == null ? "" : name.trim();
+        StringBuilder safe = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            // Illegal on at least one of the three platforms, plus control characters.
+            safe.append(c < 0x20 || "\\/:*?\"<>|".indexOf(c) >= 0 ? '_' : c);
+        }
+        String out = safe.toString();
+        while (!out.isEmpty() && (out.endsWith(".") || out.endsWith(" "))) {
+            out = out.substring(0, out.length() - 1);
+        }
+        return out.isEmpty() ? "export" : out;
+    }
+
+    /**
+     * The export's own folder, with whatever a previous run of the same name left in it removed.
+     *
+     * <p>Re-exporting under an existing name <em>overwrites that folder's contents</em> rather than
+     * creating {@code name_2}: the name is the identity of the model, and a second folder would
+     * leave the player guessing which of the two Blender should open. Only the files and the
+     * {@code textures/} tree this exporter writes are removed - anything else the player put there
+     * is left alone, and nothing outside the folder is ever touched.
+     *
+     * <p>Files a previous version wrote into {@code sable_export} itself are <em>never</em> deleted:
+     * the root used to be the shared output folder and a player may still be using what is in it, so
+     * the old layout is reported and kept.
+     */
+    private static Path freshExportDir(String name) throws IOException {
+        Path base = outputDir();
+        Path dir = base.resolve(exportFolderName(name));
+        int cleared = clearManagedFiles(dir);
+        Files.createDirectories(dir);
+        if (cleared > 0) {
+            BlueprintExporter.LOGGER.info("export dir: reused name={} cleared={} files",
+                dir.getFileName(), cleared);
+        }
+        // The old layout, kept and only mentioned. Deleting it would throw away exports the player
+        // has not re-made yet, which is exactly the sort of "cleanup" that loses someone's work.
+        int legacy = countLegacyRootFiles(base);
+        if (legacy > 0) {
+            BlueprintExporter.LOGGER.info(
+                "export dir: legacy files kept in {} ({} .obj/.mtl) - new output is in the subfolder",
+                base, legacy);
+        }
+        BlueprintExporter.LOGGER.info("export dir: {}", dir.toAbsolutePath());
+        return dir;
+    }
+
+    /** Deletes this exporter's own products inside one export folder, and nothing else. */
+    private static int clearManagedFiles(Path dir) {
+        if (!Files.isDirectory(dir)) {
+            return 0;
+        }
+        int removed = 0;
+        try (var stream = Files.list(dir)) {
+            for (Path entry : stream.toList()) {
+                String name = entry.getFileName().toString();
+                try {
+                    if (Files.isDirectory(entry)) {
+                        // `textures` is the only directory this exporter creates, and a stale one
+                        // is the whole reason a second model can inherit the first model's images.
+                        if ("textures".equals(name)) {
+                            removed += deleteTree(entry);
+                        }
+                        continue;
+                    }
+                    if (isManagedOutput(name)) {
+                        Files.deleteIfExists(entry);
+                        removed++;
+                    }
+                } catch (Throwable ignored) {
+                    // A locked file is left in place; the export overwrites it by name anyway.
+                }
+            }
+        } catch (IOException ignored) {
+            // An unreadable folder is reported by the write that follows, not here.
+        }
+        return removed;
+    }
+
+    /** Whether a file name is one this exporter writes for an export. */
+    private static boolean isManagedOutput(String name) {
+        return name.endsWith(".obj") || name.endsWith(".mtl") || name.endsWith(".parts.json")
+            || name.endsWith(".README.txt") || name.endsWith(".unsupported.json")
+            || name.endsWith("_blender.py");
+    }
+
+    private static int deleteTree(Path root) {
+        int removed = 0;
+        try (var walk = Files.walk(root)) {
+            for (Path path : walk.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                try {
+                    Files.deleteIfExists(path);
+                    if (!Files.isDirectory(path)) {
+                        removed++;
+                    }
+                } catch (Throwable ignored) {
+                    // best effort: a file held open by another process stays until next time
+                }
+            }
+        } catch (Throwable ignored) {
+            // an unreadable tree is skipped rather than failing the export
+        }
+        return removed;
+    }
+
+    /** How many {@code .obj}/{@code .mtl} files an older version left in the shared root. */
+    private static int countLegacyRootFiles(Path base) {
+        try (var stream = Files.list(base)) {
+            return (int) stream.filter(Files::isRegularFile)
+                .map(p -> p.getFileName().toString())
+                .filter(n -> n.endsWith(".obj") || n.endsWith(".mtl"))
+                .count();
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     /** The output folder as a string, without throwing - for screen labels. */
@@ -591,6 +737,11 @@ public final class BlueprintBake {
 
     private static int bakeOne(Minecraft mc, Level level, CompoundTag root,
                                String name) throws IOException {
+        // The material->block table is read by the writer, so a previous export's entries must
+        // not still be in it: a material name two blueprints share would otherwise be attributed
+        // to a block this export never drew.
+        MATERIAL_BLOCKS.clear();
+        MATERIAL_SPRITE_SRC.clear();
         StructureTemplate template = new StructureTemplate();
         CompoundTag body = normaliseTemplate(root);
         try {
@@ -1224,6 +1375,45 @@ public final class BlueprintBake {
     private static final java.util.Map<String, java.util.LinkedHashSet<String>> MATERIAL_BLOCKS =
         new java.util.LinkedHashMap<>();
 
+    /**
+     * Material -> the route that named its image, for the {@code wheel-tex:} / {@code tire-tex:}
+     * line.
+     *
+     * <p>Values, strongest first: {@code model} (the block's own model named a sprite),
+     * {@code atlas} (the renderer's own coordinates resolved to a tile), {@code dominant} (the
+     * majority sprite of the block, chosen when nothing could be resolved), {@code neighbour} (a
+     * tile borrowed from the atlas position, which is a guess), {@code none} (no image). A
+     * material can be fed by several routes, so the strongest one is kept - which is also the one
+     * worth reporting, because it is the one that decided.</p>
+     */
+    private static final java.util.Map<String, String> MATERIAL_SPRITE_SRC =
+        new java.util.LinkedHashMap<>();
+
+    /** How strongly an image's route claims to be evidence, strongest first. */
+    private static int spriteSrcRank(String src) {
+        if (src == null) {
+            return 0;
+        }
+        return switch (src) {
+            case "model" -> 4;
+            case "atlas" -> 3;
+            case "dominant" -> 2;
+            case "neighbour" -> 1;
+            default -> 0;
+        };
+    }
+
+    /** Remember the strongest route that named a material's image. */
+    private static void noteSpriteSrc(String material, String src) {
+        if (material == null || src == null) {
+            return;
+        }
+        String current = MATERIAL_SPRITE_SRC.get(material);
+        if (current == null || spriteSrcRank(src) > spriteSrcRank(current)) {
+            MATERIAL_SPRITE_SRC.put(material, src);
+        }
+    }
+
     /** Remembers which block a material belongs to, for the diagnostics. */
     private static void noteMaterialBlock(Collector collector, int fromFace, BlockState state) {
         try {
@@ -1745,8 +1935,11 @@ public final class BlueprintBake {
             float u1 = sprite.getU1();
             float v0 = sprite.getV0();
             float v1 = sprite.getV1();
-            // A one-texel placeholder is not a sprite to measure against.
-            if (u1 - u0 <= 1.001f / 512f || v1 - v0 <= 1.001f / 512f) {
+            // A placeholder is not a sprite to measure against, and its size is the test - one
+            // texel. Comparing the span against 1/512 was the same misjudgement as in addTile: on
+            // an 8192 atlas that is a real 16x16 tile, so every model whose sprite is 16x16 was
+            // measured as if it had no sprite at all and its 0..1 UVs were divided by a tile span.
+            if (isPlaceholderSprite(sprite)) {
                 return false;
             }
             int[] data = quad.getVertices();
@@ -2533,6 +2726,10 @@ public final class BlueprintBake {
         // within one file rather than across the run.
         CANNON_TEX_LOGGED = 0;
         CANNON_SAVED_LOGGED = 0;
+        // Nothing about a previous export is evidence about this one.
+        BLOCK_CENTRES.clear();
+        MATERIAL_BLOCKS.clear();
+        MATERIAL_SPRITE_SRC.clear();
 
         // 1) The world itself: ordinary blocks at ordinary coordinates. Origin and base are the
         // same corner, so its frame is the identity and the mesh starts at (0, 0, 0).
@@ -2683,6 +2880,15 @@ public final class BlueprintBake {
 
     /** How many {@code region: skip} lines one export may write. */
     private static final int REGION_SKIP_LINES = 20;
+
+    /**
+     * How many {@code tex-missing:} detail lines one export may write.
+     *
+     * <p>Twenty, matching the {@code region: skip} budget: a material whose image is genuinely
+     * absent is rare, so the cap is there to bound a log, not to hide a pattern. The
+     * {@code tex-missing: count=} line that follows always carries the true total.
+     */
+    private static final int TEX_MISSING_LINES = 20;
 
     /**
      * How many {@code region-block} and {@code region-ber} lines one export may write, each.
@@ -2928,6 +3134,32 @@ public final class BlueprintBake {
             return true;
         }
 
+        /** {@code region-block-pos} lines written so far, against its own budget. */
+        private int blockPosLines;
+        /** Spaces whose first block has already been reported, so each space gets one. */
+        private final java.util.Set<Integer> blockPosFirstSeen = new java.util.HashSet<>();
+
+        /**
+         * One {@code region-block-pos} line, while the cap allows it.
+         *
+         * <p>Its own budget rather than a share of {@link #REGION_DIAG_LINES}: that budget is spent
+         * by the two hundred copycat panels of a hull, and the block that is misplaced is usually
+         * the last one walked. This line is written once per space at each end, so it is bounded by
+         * the number of sub-levels.
+         */
+        boolean wantBlockPosLine() {
+            if (this.blockPosLines >= REGION_BLOCK_POS_LINES) {
+                return false;
+            }
+            this.blockPosLines++;
+            return true;
+        }
+
+        /** True the first time this space is seen, so its first block is always named. */
+        boolean firstBlockOfSpace(int space) {
+            return this.blockPosFirstSeen.add(space);
+        }
+
         /**
          * Settles the blocks the model pass drew nothing for.
          *
@@ -2962,6 +3194,23 @@ public final class BlueprintBake {
     }
 
     /**
+     * How many {@code region-block-pos} lines one export may write.
+     *
+     * <p>Two per space - its first block and its last - so a normal export writes four and twenty
+     * is already ten sub-levels. The cap only exists so an export with a pathological number of
+     * spaces cannot flood the log.
+     */
+    private static final int REGION_BLOCK_POS_LINES = 20;
+
+    /**
+     * How many {@code region-entity-pos} lines one export may write.
+     *
+     * <p>Enough for a selection holding several vehicles, bounded so a contraption with a thousand
+     * entities does not bury the rest of the log.
+     */
+    private static final int REGION_ENTITY_POS_LINES = 20;
+
+    /**
      * How far a space's geometry may sit from its own blocks before the export calls it drifted.
      *
      * <p>Half a block. Every legitimate difference is much smaller than that - a renderer that
@@ -2992,6 +3241,72 @@ public final class BlueprintBake {
     /** One component of a box's centre: {@code axis} 0 is x, 1 is y, 2 is z. */
     private static float centre(float[] box, int axis) {
         return (box[axis] + box[axis + 3]) * 0.5f;
+    }
+
+    /**
+     * A point in the OBJ's own axes, which is what the player sees in Blender.
+     *
+     * <p>The exporter writes game coordinates as {@code (x, z, -y)} - Minecraft is Y-up, Blender is
+     * Z-up. A diagnostic line that reports only the internal coordinates sends the reader into the
+     * file to convert by hand, so both are printed.
+     */
+    private static String blenderTriple(float x, float y, float z) {
+        return triple(x, z, -y);
+    }
+
+    /**
+     * The centre of every block the model pass produced, in export coordinates.
+     *
+     * <p>Kept for the entity pass, which runs last and has to answer one question the entity's own
+     * numbers cannot: does this entity stand where the blocks under it are? That is a nearest-
+     * neighbour lookup, so the list is the input to it. Bounded, because a selection can hold
+     * thousands of blocks and the diagnostic only needs enough of them to find a match.
+     */
+    private static final java.util.List<float[]> BLOCK_CENTRES = new java.util.ArrayList<>();
+
+    /** How many block centres the entity diagnostic may keep. */
+    private static final int BLOCK_CENTRES_LIMIT = 8192;
+
+    /**
+     * Reports where one block actually landed, against where its own position says it belongs.
+     *
+     * <p>This is the line that names a frame fault as a vector instead of as a shape. The expected
+     * point is the frame applied to {@code local + 0.5} - the centre of the block's cube - and the
+     * actual one is the centre of the geometry that block produced, read back off the faces that
+     * will be written. A block whose two numbers differ by a whole block, or by a vector that is
+     * the same for every block of the space, is the fault; a small difference is a model reaching
+     * outside its own cube.
+     */
+    private static void logBlockPlacement(RegionSpace space, BlockPos pos, String block,
+                                          float[] actual, float[] expected) {
+        float dx = actual[0] - expected[0];
+        float dy = actual[1] - expected[1];
+        float dz = actual[2] - expected[2];
+        float worst = Math.max(Math.abs(dx), Math.max(Math.abs(dy), Math.abs(dz)));
+        BlueprintExporter.LOGGER.info(
+            "region-block-pos: space={} block=({}, {}, {}) id={} export=(game {}) obj=({})"
+                + " expected=(game {}) obj=({}) delta=({}) verdict={}",
+            space.index, pos.getX(), pos.getY(), pos.getZ(), block,
+            triple(actual), blenderTriple(actual[0], actual[1], actual[2]),
+            triple(expected), blenderTriple(expected[0], expected[1], expected[2]),
+            triple(dx, dy, dz), worst <= SPACE_CHECK_TOLERANCE ? "ok" : "offset");
+    }
+
+    /** The nearest recorded block centre to a point, or null when none was recorded. */
+    private static float[] nearestBlockCentre(float x, float y, float z) {
+        float[] best = null;
+        float bestDistance = Float.MAX_VALUE;
+        for (float[] candidate : BLOCK_CENTRES) {
+            float dx = candidate[0] - x;
+            float dy = candidate[1] - y;
+            float dz = candidate[2] - z;
+            float distance = dx * dx + dy * dy + dz * dz;
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = candidate;
+            }
+        }
+        return best;
     }
 
     /**
@@ -3242,6 +3557,12 @@ public final class BlueprintBake {
                                            BlockRenderDispatcher dispatcher, Collector collector,
                                            RegionTally tally, java.util.List<RegionPending> pending) {
         RandomSource random = RandomSource.create();
+        // The last block that produced geometry in this space, reported once the loop has finished:
+        // the first block is named when it is seen, and the pair is what distinguishes "one block is
+        // off" from "the whole space is off by the same vector".
+        float[][] lastPlacement = null;
+        BlockPos lastPos = null;
+        String lastBlock = null;
         for (java.util.Map.Entry<BlockPos, BlockState> entry : space.states.entrySet()) {
             BlockPos pos = entry.getKey();
             BlockState own = entry.getValue();
@@ -3337,6 +3658,28 @@ public final class BlueprintBake {
             int produced = collector.faces.size() - facesBefore;
             if (produced > 0) {
                 tally.produced++;
+                // Where this block landed, against where its own position says it belongs. Read
+                // back off the faces that will be written, so it measures the file rather than the
+                // intent - which is the only way a frame fault is visible without opening Blender.
+                float[] box = vertexBounds(collector, facesBefore);
+                if (box != null) {
+                    float[] actual = {centre(box, 0), centre(box, 1), centre(box, 2)};
+                    BlockPos rel = space.relative(pos);
+                    org.joml.Vector3f want = new org.joml.Vector3f(
+                        rel.getX() + 0.5f, rel.getY() + 0.5f, rel.getZ() + 0.5f);
+                    space.frame.transformPosition(want);
+                    float[] expected = {want.x, want.y, want.z};
+                    if (BLOCK_CENTRES.size() < BLOCK_CENTRES_LIMIT) {
+                        BLOCK_CENTRES.add(actual);
+                    }
+                    String placedId = blockIdOf(own);
+                    if (tally.firstBlockOfSpace(space.index) && tally.wantBlockPosLine()) {
+                        logBlockPlacement(space, pos, placedId, actual, expected);
+                    }
+                    lastPlacement = new float[][] {actual, expected};
+                    lastPos = pos;
+                    lastBlock = placedId;
+                }
             } else {
                 String block = String.valueOf(net.minecraft.core.registries.BuiltInRegistries.BLOCK
                     .getKey(own.getBlock()));
@@ -3387,6 +3730,12 @@ public final class BlueprintBake {
                         collector.faces.size() - facesBefore);
                 }
             }
+        }
+        // The far end of the space, so the two lines bracket it. Both are in the space's own
+        // coordinates; comparing them says whether the whole space is displaced by one vector
+        // (a frame fault) or just one block is (a model fault).
+        if (lastPlacement != null && tally.wantBlockPosLine()) {
+            logBlockPlacement(space, lastPos, lastBlock, lastPlacement[0], lastPlacement[1]);
         }
     }
 
@@ -4057,6 +4406,10 @@ public final class BlueprintBake {
         }
 
         int[] lines = new int[1];
+        // Its own budget rather than a share of the forty above: the placement line answers a
+        // different question from the draw line, and a selection full of contraptions must not
+        // push the one that is displaced out of the log.
+        int[] posLines = new int[1];
         for (java.util.Map.Entry<net.minecraft.world.entity.Entity, RegionSpace> entry
                 : found.entrySet()) {
             net.minecraft.world.entity.Entity entity = entry.getKey();
@@ -4113,7 +4466,10 @@ public final class BlueprintBake {
             // no sprite means no conversion, which is what `setSprite(null)` arranges.
             collector.setSprite(null);
             collector.setUvNeedsAtlasConversion(true);
-            RegionEntityCapture capture = new RegionEntityCapture(collector, transform);
+            // The renderer is handed over as well as the collector: `getTextureLocation` is the
+            // third route to the image these faces belong to, and it is the only one that works
+            // for a renderer whose render type names the block atlas. See entityTextureFor.
+            RegionEntityCapture capture = new RegionEntityCapture(collector, transform, entity, renderer);
             // The entity's own id becomes the material suffix. Without it every entity's faces
             // were named `__entity`, so a cannon's barrel and a periscope could not be told apart
             // in the outliner - and the cannon probe had no id to print.
@@ -4146,9 +4502,13 @@ public final class BlueprintBake {
                 // short and the cannon probe would miss the last face's texture.
                 collector.closePendingQuad();
                 int quads = collector.faces.size() - before;
+                // The last render type's `entity-tex:` line, written after the final quad is in
+                // the list so its count is the whole run rather than one short.
+                capture.finishEntity();
                 if (quads == 0) {
                     empty++;
                 }
+                logEntityPlacement(posLines, entity, home, world, origin, collector, before, quads);
                 // `ok` used to be printed for a renderer that wrote nothing, which is how a
                 // contraption that never drew its blocks looked exactly like one that did.
                 logRegionEntity(lines, entity, world, quads, true,
@@ -4166,6 +4526,10 @@ public final class BlueprintBake {
             } finally {
                 FlywheelGate.release(gated);
                 collector.unpinMaterial();
+                // The entity pin belongs to one entity: the next one decides its own image, and a
+                // leaked pin would file its faces under this entity's material and keep their
+                // coordinates unconverted.
+                collector.setEntityPin(null);
                 collector.resetQuad();
             }
         }
@@ -4174,6 +4538,75 @@ public final class BlueprintBake {
             drawn, totalFound, spaces.size(), empty);
         return drawn;
     }
+
+    /**
+     * Reports where one entity's geometry landed, against the blocks exported around it.
+     *
+     * <p>This is the line for "the entity does not sit on its own blocks". The two producers reach
+     * the collector by different routes and with different transforms - a block through
+     * {@code frame . translate(pos - base)}, an entity through
+     * {@code frame . translate(world - origin)} - so the only honest check is to measure both and
+     * subtract. The entity's origin is the translation its transform actually used, the geometry
+     * centre is read back off the faces that will be written, and the reference is the nearest
+     * block centre the model pass recorded.
+     *
+     * <p>A standing entity is not exactly on a block centre - its own origin is at its feet, a
+     * little above and beside the centre of whatever it stands on - so half a block to a block and
+     * a half is normal and the verdict is drawn at {@link #ENTITY_POS_TOLERANCE}. A whole
+     * {@code base}, a doubled frame or a camera-relative offset is far larger than that, which is
+     * what makes the number worth printing.
+     */
+    private static void logEntityPlacement(int[] lines, net.minecraft.world.entity.Entity entity,
+                                           RegionSpace space, org.joml.Vector3d world,
+                                           Vec3 origin, Collector collector, int from, int quads) {
+        if (quads <= 0 || lines[0] >= REGION_ENTITY_POS_LINES) {
+            return;
+        }
+        float[] nearest = nearestBlockCentre((float) (world.x - origin.x),
+            (float) (world.y - origin.y), (float) (world.z - origin.z));
+        float[] geom = null;
+        try {
+            float[] box = vertexBounds(collector, from);
+            if (box != null) {
+                geom = new float[] {centre(box, 0), centre(box, 1), centre(box, 2)};
+            }
+        } catch (Throwable ignored) {
+            // a missing centre is reported as `-` rather than hiding the line
+        }
+        lines[0]++;
+        float ex = (float) (world.x - origin.x);
+        float ey = (float) (world.y - origin.y);
+        float ez = (float) (world.z - origin.z);
+        if (nearest == null) {
+            BlueprintExporter.LOGGER.info(
+                "region-entity-pos: space={} entity={} type={} export=({}) obj=({}) geom=({})"
+                    + " nearest-block-export=- delta=- verdict=no-block-reference",
+                space == null ? -1 : space.index, entity.getUUID(), entityTypeId(entity),
+                triple(ex, ey, ez), blenderTriple(ex, ey, ez), triple(geom));
+            return;
+        }
+        float dx = ex - nearest[0];
+        float dy = ey - nearest[1];
+        float dz = ez - nearest[2];
+        float worst = Math.max(Math.abs(dx), Math.max(Math.abs(dy), Math.abs(dz)));
+        BlueprintExporter.LOGGER.info(
+            "region-entity-pos: space={} entity={} type={} export=({}) obj=({}) geom=({})"
+                + " nearest-block-export=({}) delta=({}) verdict={}",
+            space == null ? -1 : space.index, entity.getUUID(), entityTypeId(entity),
+            triple(ex, ey, ez), blenderTriple(ex, ey, ez), triple(geom),
+            triple(nearest), triple(dx, dy, dz),
+            worst <= ENTITY_POS_TOLERANCE ? "ok" : "separated");
+    }
+
+    /**
+     * How far an entity may sit from the nearest exported block centre before it is called
+     * separated.
+     *
+     * <p>Two blocks. A standing entity's origin is within half a block of the centre of the block
+     * it stands on, and a part drawn by a renderer can reach a block or so out; a frame fault was
+     * measured in the same file at 17 blocks. Two is between the two and is not a judgement call.
+     */
+    private static final float ENTITY_POS_TOLERANCE = 2.0f;
 
     /** One line per processed entity, capped so a crowded selection cannot flood the log. */
     private static void logRegionEntity(int[] lines, net.minecraft.world.entity.Entity entity,
@@ -4259,6 +4692,209 @@ public final class BlueprintBake {
             out.append(Character.isLetterOrDigit(c) ? c : '_');
         }
         return out.toString();
+    }
+
+    // ------------------------------------------------------------ entity textures
+    //
+    // The entity pass had one route to a renderer's image - the render type - and for a Create
+    // entity that route answers `minecraft:textures/atlas/blocks.png`. An atlas is stitched in
+    // memory, so no PNG can be copied for it and the .mtl has no `map_Kd` line: measured on the
+    // region export `region_20261031_001118`, all 12 materials without an image were entity or
+    // block-entity materials whose texture was the atlas or the `missingno` stand-in -
+    // `M_solid_minecraft_textures_atlas_blocks.png__create_stationary_contraption` and its like.
+    // In Blender those faces are flat white.
+    //
+    // So the image is looked for in three places, in order, and the answer is recorded with which
+    // one found it:
+    //
+    //   1. the render type's own texture, read through CaptureExport.textureOf (the thorough
+    //      reader that also walks a modded render type's fields and parses its description);
+    //   2. the same, read the way the block-entity pass reads it, for a type whose shape the
+    //      first reader cannot follow;
+    //   3. EntityRenderer#getTextureLocation(entity), which is the renderer stating its texture
+    //      outright - `public` in 1.21.1, verified with javap against the srg client jar.
+    //
+    // A location that names a real pack PNG is pinned as the material's image and the vertices'
+    // own coordinates are left exactly as the renderer wrote them (see Collector#setEntityPin): an
+    // `entityCutout` renderer hands over 0..1 of that very image, so any conversion here would
+    // divide the whole picture into a corner of itself. When all three answer "the block atlas",
+    // the pin stays and the quad's coordinates resolve their own tile - the route the block-entity
+    // pass already takes, and the only one that can name a texture for a Create contraption, whose
+    // renderer draws its blocks through `RenderType.chunkBufferLayers()` in atlas coordinates.
+
+    /** Entity textures a real PNG was found for, as {@code ns:path}: copied byte for byte. */
+    private static final java.util.Set<String> ENTITY_TEXTURES =
+        new java.util.LinkedHashSet<>();
+
+    /** The entity ids this run drew, for the end-of-export audit of their materials. */
+    private static final java.util.Set<String> ENTITY_LABELS = new java.util.LinkedHashSet<>();
+
+    /**
+     * The entities themselves, by the label their faces were filed under.
+     *
+     * <p>Needed after the render pass, because a contraption's geometry arrives with the
+     * renderer's own coordinates and no texture name at all, and the only remaining evidence of
+     * which sprite each face used is the block the face belongs to - which is in the
+     * contraption's own block map. Measured on {@code region_20261031_100932}: the sail cloth of
+     * {@code aeronautics:propeller_bearing_contraption} (228 faces, UVs on 0..1) was filed under
+     * {@code create:block/sail/frame} - the frame, not the canvas - so every sail in the
+     * contraption rendered as the frame image stretched over the whole cloth.</p>
+     */
+    private static final java.util.Map<String, net.minecraft.world.entity.Entity> ENTITY_BY_LABEL =
+        new java.util.LinkedHashMap<>();
+
+    /**
+     * The real PNG an entity's own renderer names, for entities that draw through the block atlas.
+     *
+     * <p>A contraption names nothing here; Sable's {@code DiagramEntityRenderer} names nothing in
+     * its render type either, but its geometric model is textured with
+     * {@code simulated:textures/entity/diagram_small.png} - a file no atlas carries. Without this,
+     * that entity's three faces were resolved to whichever block tile happened to sit under their
+     * centroid (measured: {@code 0extra_building_material/preview/bin_.png}).</p>
+     */
+    private static final java.util.Map<String, String> ENTITY_RENDERER_TEXTURE =
+        new java.util.LinkedHashMap<>();
+
+    /**
+
+    /** Faces filed under a named entity image, and faces nothing could name, for the summary. */
+    private static int ENTITY_TEX_RESOLVED = 0;
+    private static int ENTITY_TEX_UNRESOLVED = 0;
+
+    /** The `entity-tex:` line budget, so a selection full of contraptions cannot flood the log. */
+    private static final int ENTITY_TEX_LINES = 30;
+    private static int ENTITY_TEX_LOGGED = 0;
+
+    /** What one render type's texture resolved to: the id, and which of the three routes found it. */
+    private record EntityTexture(String path, String via) {
+    }
+
+    /**
+     * The image one entity render type draws with, or a null path when nothing could be named.
+     *
+     * <p>The atlas is returned as a path rather than as {@code null}: "the atlas" is a real answer
+     * and the caller treats it differently from silence - a quad whose render type names the atlas
+     * has coordinates that can still be resolved to a tile, while a quad whose render type names
+     * nothing has nothing to go on and keeps the old, untextured behaviour.</p>
+     *
+     * <p>{@code rendererTexture} is {@code EntityRenderer#getTextureLocation(entity)} for this
+     * entity, already resolved once, or null.</p>
+     */
+    private static EntityTexture entityTextureFor(RenderType type, String rendererTexture) {
+        String fromType = null;
+        try {
+            net.minecraft.resources.ResourceLocation location = CaptureExport.textureOf(type);
+            if (location == null) {
+                // The second reader: the route the block-entity pass has always used, which reads
+                // the state shard's own declared location rather than walking the object graph.
+                fromType = renderTypeTexture(type);
+            } else {
+                fromType = location.getNamespace() + ":" + location.getPath();
+            }
+        } catch (Throwable ignored) {
+            fromType = null;
+        }
+        if (fromType != null) {
+            // Only a location a pack actually provides is used. A reader that fell back to parsing
+            // a render type's description can name something that does not exist, and a material
+            // pointing at nothing is worse than the white it replaces.
+            if (isAtlasLocation(fromType) || textureProvided(fromType)) {
+                return new EntityTexture(fromType, "render-type");
+            }
+        }
+        if (rendererTexture != null) {
+            if (isAtlasLocation(rendererTexture) || textureProvided(rendererTexture)) {
+                return new EntityTexture(rendererTexture, "renderer");
+            }
+        }
+        // Nothing usable from either route. Not an exception, and not a texture.
+        return new EntityTexture(null, "-");
+    }
+
+    /**
+     * Whether a pack provides this texture, asked the three ways a renderer may have written it.
+     *
+     * <p>The same path shapes {@code openTexture} and {@code writeSpritePng} try, because a mod
+     * may name a texture {@code ns:block/foo}, {@code ns:textures/block/foo.png} or anything in
+     * between. Nothing is read: the resource manager only says whether it is there.</p>
+     */
+    private static boolean textureProvided(String texture) {
+        if (texture == null || texture.isEmpty()) {
+            return false;
+        }
+        try {
+            Minecraft minecraft = Minecraft.getInstance();
+            if (minecraft == null) {
+                return false;
+            }
+            net.minecraft.resources.ResourceLocation base =
+                net.minecraft.resources.ResourceLocation.tryParse(texture);
+            if (base == null) {
+                return false;
+            }
+            String path = base.getPath();
+            boolean hasPng = path.toLowerCase(java.util.Locale.ROOT).endsWith(".png");
+            boolean hasTextures = path.startsWith("textures/");
+            for (String prefix : hasTextures ? new String[] {""} : new String[] {"textures/", ""}) {
+                for (String suffix : hasPng ? new String[] {""} : new String[] {".png", ""}) {
+                    net.minecraft.resources.ResourceLocation candidate =
+                        net.minecraft.resources.ResourceLocation.tryParse(
+                            base.getNamespace() + ":" + prefix + path + suffix);
+                    if (candidate != null
+                            && !minecraft.getResourceManager().getResource(candidate).isEmpty()) {
+                        return true;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // A lookup that cannot run is "no file", not a reason to fail the export.
+        }
+        return false;
+    }
+
+    /**
+     * {@code EntityRenderer#getTextureLocation(entity)} as a texture id, or null.
+     *
+     * <p>Raw types on purpose: the renderer's type parameter is its own entity class, which is not
+     * on this mod's compile path, and the erasure of {@code T} is {@code Entity} - the same object
+     * the dispatcher just handed out. Create's {@code ContraptionEntityRenderer} answers
+     * {@code null} here by design (its geometry is blocks, drawn from the block atlas), so null is
+     * the normal answer for a contraption and the atlas route below is what names those parts.</p>
+     */
+    /**
+     * Whether a material name carries an entity id this run drew.
+     *
+     * <p>The suffix is the statement: every face an entity renderer wrote was pinned with the
+     * entity's sanitised id after a double underscore, so a material ending in one of those is an
+     * entity material and nothing else is. The block-entity pass writes its own block id in the
+     * same place, which is why the label has to be one of this run's entities rather than any
+     * suffix at all.</p>
+     */
+    private static boolean isEntityMaterial(String material) {
+        if (material == null || ENTITY_LABELS.isEmpty()) {
+            return false;
+        }
+        for (String label : ENTITY_LABELS) {
+            if (material.endsWith("__" + label)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static String rendererTextureOf(
+            net.minecraft.client.renderer.entity.EntityRenderer renderer,
+            net.minecraft.world.entity.Entity entity) {
+        if (renderer == null || entity == null) {
+            return null;
+        }
+        try {
+            net.minecraft.resources.ResourceLocation location = renderer.getTextureLocation(entity);
+            return location == null ? null : location.getNamespace() + ":" + location.getPath();
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     /**
@@ -4483,20 +5119,41 @@ public final class BlueprintBake {
      * A {@code MultiBufferSource} for one entity, in export coordinates.
      *
      * <p>Naming still goes through {@link BlockEntityCapture}: an entity renderer names its texture
-     * only through the render type it asks for, which is the same statement a block-entity renderer
-     * makes, so the same code can read it.
+     * only through the render type it asks for, which is the same statement a block-entity
+     * renderer makes, so the same code can read it. What is added here is the image that statement
+     * cannot name - see {@link #entityTextureFor} - and one {@code entity-tex:} line per render
+     * type, so "which image did this entity's faces end up with, and how was it found" is a
+     * question the log answers without a second export.
      */
     private static final class RegionEntityCapture
             implements net.minecraft.client.renderer.MultiBufferSource {
         private final Collector collector;
         private final Matrix4f transform;
         private final BlockEntityCapture naming;
+        private final net.minecraft.world.entity.Entity entity;
+        private final net.minecraft.client.renderer.entity.EntityRenderer<?> renderer;
+        /** The entity's registry id, for the log line, and its sanitised form, for the material. */
+        private String entityId = "?";
+        private String label = "entity";
+        /** {@code getTextureLocation(entity)}, resolved at most once per entity. */
+        private String rendererTexture;
+        private boolean rendererTextureRead;
+        /** The {@code entity-tex:} group that is open: what it resolved to and where it started. */
+        private boolean groupOpen;
+        private String groupTex = "-";
+        private String groupVia = "-";
+        private String groupUvSpace = "unknown";
+        private int groupStart;
 
-        RegionEntityCapture(Collector collector, Matrix4f transform) {
+        RegionEntityCapture(Collector collector, Matrix4f transform,
+                            net.minecraft.world.entity.Entity entity,
+                            net.minecraft.client.renderer.entity.EntityRenderer<?> renderer) {
             this.collector = collector;
             this.transform = transform;
             this.naming = new BlockEntityCapture(collector);
             this.naming.currentBlockLabel = "entity";
+            this.entity = entity;
+            this.renderer = renderer;
         }
 
         /**
@@ -4508,19 +5165,133 @@ public final class BlueprintBake {
          * different material - the pin is only re-derived when the cache is empty.
          */
         void beginEntity(String label) {
-            this.naming.currentBlockLabel = label == null || label.isEmpty() ? "entity" : label;
+            this.label = label == null || label.isEmpty() ? "entity" : label;
+            this.entityId = entityTypeId(this.entity);
+            this.naming.currentBlockLabel = this.label;
             this.naming.setBlock(null);
+            ENTITY_LABELS.add(this.label);
+            // Kept for the repair pass: a contraption's block map is the only place that still
+            // knows which sprite each of its faces used once the renderer has handed over bare
+            // coordinates. Guarded, because nothing here may fail an export.
+            try {
+                ENTITY_BY_LABEL.put(this.label, this.entity);
+            } catch (Throwable ignored) {
+                // A missing entry only means the repair pass keeps its previous behaviour.
+            }
+        }
+
+        /** Close the last group once the renderer has returned and its final quad is written. */
+        void finishEntity() {
+            closeGroup();
+        }
+
+        /** The renderer's own texture for this entity, asked once. */
+        private String rendererTexture() {
+            if (!this.rendererTextureRead) {
+                this.rendererTextureRead = true;
+                this.rendererTexture = rendererTextureOf(this.renderer, this.entity);
+            }
+            return this.rendererTexture;
         }
 
         @Override
         public com.mojang.blaze3d.vertex.VertexConsumer getBuffer(RenderType type) {
+            // The previous render type's run of faces is complete by the time the next one is
+            // asked for, so its line is written here rather than left to the end of the entity.
+            closeGroup();
             try {
                 this.naming.getBuffer(type);
             } catch (Throwable t) {
                 BlueprintExporter.LOGGER.debug("region: entity render type unreadable: {}",
                     t.toString());
             }
+            try {
+                EntityTexture found = entityTextureFor(type, rendererTexture());
+                if (found != null && found.path() != null && !isAtlasLocation(found.path())) {
+                    // A real PNG. The material is named after it and pinned, so every quad this
+                    // render type writes is filed under that image - and `setEntityPin` keeps the
+                    // vertices' own coordinates as they arrived, because an `entityCutout` renderer
+                    // hands over 0..1 of this very image. See Collector#setEntityPin.
+                    Layer layer = layerFor(found.path());
+                    String material = materialNameFor(found.path(), layer) + "__" + this.label;
+                    this.collector.pinMaterial(material, found.path(), layer, this.label);
+                    this.collector.setEntityPin(found.path());
+                    this.collector.setUvNeedsAtlasConversion(true);
+                    ENTITY_TEXTURES.add(found.path());
+                    openGroup(found.path(), found.via(), "local");
+                } else if (found != null && found.path() != null) {
+                    // The block atlas. Named, but not a file: the pin stays as the block-entity
+                    // pass leaves it, and the quad's coordinates are allowed to resolve their own
+                    // tile. That is the only route that can name a texture for a Create
+                    // contraption, whose renderer draws blocks through
+                    // `RenderType.chunkBufferLayers()` in atlas coordinates with a null
+                    // `getTextureLocation`.
+                    this.collector.setEntityPin(null);
+                    this.collector.setUvNeedsAtlasConversion(false);
+                    // The renderer may still name a real PNG of its own - Sable's diagram
+                    // renderer does - and such a file is strictly better evidence than whichever
+                    // atlas tile the coordinates happen to land in. Remembered here, used by the
+                    // repair pass only when the group has no other image to show.
+                    try {
+                        String own = rendererTexture();
+                        if (own != null && !isAtlasLocation(own) && textureProvided(own)) {
+                            ENTITY_RENDERER_TEXTURE.putIfAbsent(this.label, own);
+                        }
+                    } catch (Throwable ignored) {
+                        // No renderer texture: the atlas route stands.
+                    }
+                    openGroup(found.path(), found.via(), "atlas");
+                } else {
+                    // Neither the render type nor the renderer named an image. The old behaviour
+                    // stands - whatever the render type pin was - and the faces are counted as
+                    // unresolved, named in the summary and, if they still have no `map_Kd` after
+                    // the .mtl is written, called out by name.
+                    this.collector.setEntityPin(null);
+                    this.collector.setUvNeedsAtlasConversion(true);
+                    openGroup(null, "-", "unknown");
+                }
+            } catch (Throwable t) {
+                this.collector.setEntityPin(null);
+                BlueprintExporter.LOGGER.debug("region: entity texture unresolved: {}",
+                    t.toString());
+                openGroup(null, "-", "unknown");
+            }
             return new PosedConsumer(this.collector, this.transform);
+        }
+
+        private void openGroup(String texture, String via, String uvSpace) {
+            this.groupOpen = true;
+            this.groupTex = texture == null || texture.isEmpty() ? "unresolved" : texture;
+            this.groupVia = via == null || via.isEmpty() ? "-" : via;
+            this.groupUvSpace = uvSpace;
+            this.groupStart = this.collector.faces.size();
+        }
+
+        /**
+         * Write this group's {@code entity-tex:} line and add its faces to the summary.
+         *
+         * <p>The material is read from the collector rather than remembered: the two must be the
+         * same string, and the collector is where the pin actually landed.</p>
+         */
+        private void closeGroup() {
+            if (!this.groupOpen) {
+                return;
+            }
+            this.groupOpen = false;
+            int quads = Math.max(0, this.collector.faces.size() - this.groupStart);
+            if ("unresolved".equals(this.groupTex)) {
+                ENTITY_TEX_UNRESOLVED += quads;
+            } else {
+                ENTITY_TEX_RESOLVED += quads;
+            }
+            if (ENTITY_TEX_LOGGED >= ENTITY_TEX_LINES) {
+                return;
+            }
+            ENTITY_TEX_LOGGED++;
+            BlueprintExporter.LOGGER.info(
+                "entity-tex: type={} material={} tex={} via={} uv-space={} quads={}",
+                this.entityId, this.collector.currentMaterialName(), this.groupTex,
+                this.groupVia, this.groupUvSpace, quads);
         }
     }
 
@@ -5142,7 +5913,11 @@ public final class BlueprintBake {
      */
     private static String materialNameFor(String texture, Layer layer) {
         Layer resolved = layer == null ? Layer.SOLID : layer;
-        if (texture == null || texture.isEmpty()) {
+        // The game's missing-texture stand-in never becomes a material name. It has no PNG, so a
+        // name carrying it can only ever end up as a `newmtl` with no `map_Kd` - that is exactly
+        // how `M_solid_minecraft_missingno` got into eleven exports - and the name is the one place
+        // the fault is visible in Blender. `_untextured` says the same thing honestly.
+        if (texture == null || texture.isEmpty() || isMissingSpriteName(texture)) {
             // A renderer with no recoverable texture still needs a name; the layer prefix keeps it
             // in the right .mtl block instead of dumping it among the opaque ones.
             return resolved.prefix + "_untextured";
@@ -5263,8 +6038,9 @@ public final class BlueprintBake {
     private static final class BlockEntityCapture
             implements net.minecraft.client.renderer.MultiBufferSource {
         private final Collector collector;
-        /** One lookup per render type rather than per vertex. */
-        private final java.util.Map<RenderType, String> textures = new java.util.HashMap<>();
+        /** One lookup per render type rather than per vertex, keeping which route named it. */
+        private final java.util.Map<RenderType, SpriteChoice> spriteChoices =
+            new java.util.HashMap<>();
         /** Every render type this capture was asked for, named, for the log line. */
         final java.util.LinkedHashSet<String> usedRenderTypes = new java.util.LinkedHashSet<>();
 
@@ -5281,9 +6057,11 @@ public final class BlueprintBake {
                 // The same string `usedRenderTypes` keeps, so the two counts always agree.
                 CaptureScope.noteRenderType(String.valueOf(type));
                 // The block's own sprite first: the render type can only offer the atlas, whose
-                // pixels cannot be copied. See spritePathForBlock.
-                String texture = textures.computeIfAbsent(type,
-                    t -> spritePathForBlock(currentState, t));
+                // pixels cannot be copied. See spriteChoiceForBlock - and the route it took is
+                // carried through, because the `wheel-tex:` line has to name it.
+                SpriteChoice choice = this.spriteChoices.computeIfAbsent(type,
+                    t -> spriteChoiceForBlock(currentState, t));
+                String texture = choice.path();
                 // One verdict, used for both the name and the .mtl body: max(render type, texture
                 // alpha). Computing it twice is what allowed a "M_translucent_..." name to be
                 // written with `d 1.0`.
@@ -5295,6 +6073,11 @@ public final class BlueprintBake {
                     // at the start of the name, which is where the prefix has to be.
                     name = name + "__" + currentBlockLabel;
                 }
+                // Whose texture this renderer may draw, for the belt-versus-wheel decision.
+                String blockId = blockIdOf(this.currentState);
+                int colon = blockId.indexOf(':');
+                collector.setPinnedBlockNamespace(colon > 0 ? blockId.substring(0, colon) : null);
+                collector.setPinnedSource(choice.src());
                 collector.pinMaterial(name, texture, layer, currentBlockLabel);
             }
             return collector;
@@ -5303,7 +6086,7 @@ public final class BlueprintBake {
         /** Called before each block entity is rendered. */
         void setBlock(net.minecraft.world.level.block.state.BlockState state) {
             this.currentState = state;
-            this.textures.clear();
+            this.spriteChoices.clear();
         }
 
         /** Set before each block entity is rendered, so its faces can be named after it. */
@@ -5331,8 +6114,15 @@ public final class BlueprintBake {
      *
      * <p>Falls back to the render type's texture, so a renderer that does name a real texture
      * still gets it.
+     *
+     * <p>The route is reported as well, because it is the first thing the {@code wheel-tex:} line
+     * has to answer: the block's model naming an image is real evidence, while the render type
+     * naming the block atlas is none at all.</p>
      */
-    private static String spritePathForBlock(
+    private record SpriteChoice(String path, String src) {
+    }
+
+    private static SpriteChoice spriteChoiceForBlock(
             net.minecraft.world.level.block.state.BlockState state, RenderType type) {
         if (state != null) {
             try {
@@ -5341,6 +6131,9 @@ public final class BlueprintBake {
                 // renderer takes to find the model it draws.
                 var shaper = Minecraft.getInstance().getModelManager().getBlockModelShaper();
                 var model = shaper.getBlockModel(state);
+                // The block's own model is asked for its first non-empty quad, which is the sprite
+                // the game itself would draw that block with - the priority this pass is meant to
+                // follow before any majority vote.
                 for (var direction : net.minecraft.core.Direction.values()) {
                     var quads = model.getQuads(state, direction, net.minecraft.util.RandomSource
                         .create(0L));
@@ -5350,7 +6143,14 @@ public final class BlueprintBake {
                     var sprite = quads.get(0).getSprite();
                     if (sprite != null && sprite.contents() != null) {
                         var id = sprite.contents().name();
-                        return id.getNamespace() + ":" + id.getPath();
+                        // A model nothing textures correctly answers `missingno`, which is not a
+                        // file: returning it pinned the CBC ammo rack's faces to a name no
+                        // `map_Kd` can point at (measured, 80 faces of
+                        // region_20261031_005556). Fall through to the particle icon and then to
+                        // the render type, both of which can still name something real.
+                        if (!isMissingSpriteName(id.getPath())) {
+                            return new SpriteChoice(id.getNamespace() + ":" + id.getPath(), "model");
+                        }
                     }
                 }
                 // A model with no directional quads still has a particle sprite, which is the
@@ -5358,7 +6158,9 @@ public final class BlueprintBake {
                 var particle = model.getParticleIcon();
                 if (particle != null && particle.contents() != null) {
                     var id = particle.contents().name();
-                    return id.getNamespace() + ":" + id.getPath();
+                    if (!isMissingSpriteName(id.getPath())) {
+                        return new SpriteChoice(id.getNamespace() + ":" + id.getPath(), "model");
+                    }
                 }
             } catch (Throwable t) {
                 if (DIAGNOSTICS) {
@@ -5367,7 +6169,7 @@ public final class BlueprintBake {
                 }
             }
         }
-        return renderTypeTexture(type);
+        return new SpriteChoice(renderTypeTexture(type), "render-type");
     }
 
     /**
@@ -5437,6 +6239,13 @@ public final class BlueprintBake {
             if (sprite == null || sprite.contents() == null) {
                 continue;
             }
+            // The game's missing-texture stand-in is a real 16x16 tile, so it passes every
+            // geometric test and would win the "smallest containing tile" race wherever a
+            // renderer's own 0..1 coordinates happen to fall. It is never the answer: there is
+            // no PNG behind it. Named here so no caller has to remember to exclude it.
+            if (isMissingSpriteName(sprite.contents().name().getPath())) {
+                continue;
+            }
             float spanU = sprite.getU1() - sprite.getU0();
             float spanV = sprite.getV1() - sprite.getV0();
             if (spanU <= 0f || spanV <= 0f) {
@@ -5487,13 +6296,58 @@ public final class BlueprintBake {
     /**
      * Smallest span a real atlas tile can have.
      *
-     * <p>A {@code getTextureAtlas} lookup answers one-texel placeholders whose span measured 1/512;
-     * a real 16x16 tile on the largest atlas this pack builds (8192) is 1/512 wide as well, so the
-     * test is a floor rather than a comparison: anything at or above it is a real tile and anything
-     * below it is the placeholder. Chosen at 1/256 so a 16x16 tile on a 16384 atlas still counts as
-     * real while a single texel never does.</p>
+     * <p>This was {@code 1/256} and it was wrong for this pack. The comment it carried reasoned
+     * about a 512-wide atlas, where a one-texel placeholder spans 1/512 and a 16x16 tile spans
+     * 16/512 - two decades apart. A modpack stitches an 8192 atlas, where a real 16x16 tile spans
+     * 16/8192 = <b>1/512</b> as well, so a 1/256 floor rejected the real tile and kept the atlas
+     * name: measured on {@code region_20261031_005556}, five materials came out as
+     * {@code M_*_minecraft_textures_atlas_blocks.png__...} with no {@code map_Kd} even though every
+     * one of their quads sat inside a single real tile (quad spans 0.0016..0.00195 = 1/512).</p>
+     *
+     * <p>So the floor is now {@code 1/1024}: it still rejects a genuinely collapsed tile while a
+     * 16x16 tile on an 8192 atlas (1/512) and on a 16384 atlas (1/1024) are both accepted. Span
+     * alone can never separate a real 16x16 tile from a 16x16 placeholder though - on this pack both
+     * are 1/512 - so the placeholder is identified by its <b>own contents</b> as well, see
+     * {@link #isPlaceholderSprite}: a placeholder is one texel wide and a real tile is not, and the
+     * game's missing-texture stand-in is called {@code missingno} whatever its size.</p>
      */
-    private static final float PLACEHOLDER_SPAN = 1f / 256f;
+    private static final float PLACEHOLDER_SPAN = 1f / 1024f;
+
+    /**
+     * Whether a sprite name is the game's stand-in for a texture no pack provides.
+     *
+     * <p>{@code minecraft:missingno} is a real 16x16 sprite - the game generates its pixels - so it
+     * passes every span test. It is still not a texture: there is no PNG to copy, no
+     * {@code map_Kd} that can be written for it, and naming a material after it is how
+     * {@code M_solid_minecraft_missingno} reached the .mtl of {@code region_20261031_005556}.
+     * Measured: that name covered 54 model faces of the CBC ammo rack and 402 more of the copycat
+     * cogwheels, all of them white in Blender.</p>
+     */
+    private static boolean isMissingSpriteName(String name) {
+        return name != null && name.toLowerCase(java.util.Locale.ROOT).contains("missingno");
+    }
+
+    /**
+     * Whether a sprite is a placeholder rather than a stitched tile.
+     *
+     * <p>For sprites returned by a {@code Minecraft#getTextureAtlas} lookup, which answers one
+     * texel carrying the requested name instead of the stitched tile, or by a model whose texture
+     * no pack provides, which answers the game's {@code missingno} stand-in. A one-texel test is
+     * only safe on that lookup - a pack may legitimately ship a 1x1 colour texture - so the pin and
+     * sprite paths use {@link #isMissingSpriteName} alone and this is reserved for the lookup.
+     * </p>
+     */
+    private static boolean isPlaceholderSprite(
+            net.minecraft.client.renderer.texture.TextureAtlasSprite sprite) {
+        if (sprite == null || sprite.contents() == null) {
+            return true;
+        }
+        var contents = sprite.contents();
+        if (isMissingSpriteName(contents.name().getPath())) {
+            return true;
+        }
+        return contents.width() <= 1 || contents.height() <= 1;
+    }
 
     /** Every tile that could be named, collected once, deduplicated by name. */
     private static java.util.List<net.minecraft.client.renderer.texture.TextureAtlasSprite>
@@ -5628,9 +6482,15 @@ public final class BlueprintBake {
             if (sprite == null || sprite.contents() == null) {
                 return;
             }
-            // A one-texel span is a placeholder, not a tile. Rejecting it here is what stops the
-            // wrong name being reported as a find.
-            if (sprite.getU1() - sprite.getU0() <= 1.001f / 512f) {
+            // A placeholder is one texel; a real tile is not, whatever size the atlas is. This
+            // used to compare the span against 1/512, which on this pack's 8192 atlas is the span
+            // of an ordinary 16x16 tile - so every 16x16 block texture was dropped from the
+            // candidate list and the tile lookup could only ever answer with a sprite of 32x32 or
+            // more. Measured: `DIAG tile candidates: 6990`, and every tile it ever reported had
+            // span=(0.00390625, 0.00390625) - 32 pixels, never 16 - while the five materials this
+            // round is about sat in 16x16 tiles (per-face span 0.0016..0.00195) and could not be
+            // found at all.
+            if (isPlaceholderSprite(sprite)) {
                 return;
             }
             out.add(sprite);
@@ -5752,9 +6612,27 @@ public final class BlueprintBake {
      */
     private static int write(Collector collector, String name,
                              java.util.Map<Integer, String> spaceLabels) throws IOException {
-        Path outDir = outputDir();
-        Path obj = outDir.resolve(name + ".obj");
-        Path mtl = outDir.resolve(name + ".mtl");
+        // This export's own folder, never the shared root: a model's .mtl and its textures have to
+        // be a closed set that no later export can rewrite.
+        //
+        // The stem is the sanitised name, so the folder and the files inside it agree even when the
+        // name the player typed carried a character a file name cannot hold.
+        String stem = exportFolderName(name);
+        Path outDir = freshExportDir(name);
+        Path obj = outDir.resolve(stem + ".obj");
+        Path mtl = outDir.resolve(stem + ".mtl");
+        // Everything below names files after `name`: the .obj, the .mtl, the manifest, the Blender
+        // helper and the `mtllib`/`OBJ_NAME` strings that tie them together. Re-pointing the
+        // parameter at the sanitised stem once, here, is what keeps all of them in step.
+        if (!stem.equals(name)) {
+            BlueprintExporter.LOGGER.info("export dir: name={} sanitised={}", name, stem);
+            name = stem;
+        }
+
+        // Repair first, before anything is grouped: a material that names no image is renamed and
+        // re-addressed here, so no map_Kd-less material can reach the .mtl or the .obj. See
+        // repairUntexturedMaterials for the measured fault this closes.
+        Map<String, String> repairNotes = repairUntexturedMaterials(collector, outDir);
 
         // Material key = sprite, so one material per distinct texture.
         Map<String, List<Face>> byMaterial = new LinkedHashMap<>();
@@ -5934,8 +6812,18 @@ public final class BlueprintBake {
         // texture at all.
         Map<String, String> materialFile = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : materialAtlas.entrySet()) {
-            String textureFile = writeSpritePng(outDir, entry.getValue(),
-                layerOfMaterial(entry.getKey(), materialLayer));
+            String texture = entry.getValue();
+            String textureFile;
+            if (texture != null && ENTITY_TEXTURES.contains(texture)) {
+                // An entity renderer's own PNG. Copied byte for byte, exactly as the pack ships it,
+                // into `textures/<namespace>/<path>.png` - the sprite writer below re-encodes its
+                // input (and binarises a cutout sheet), which is right for a block texture drawn
+                // through the atlas but wrong for a file that is already the image the .mtl wants.
+                textureFile = writeEntityTexturePng(outDir, texture);
+            } else {
+                textureFile = writeSpritePng(outDir, texture,
+                    layerOfMaterial(entry.getKey(), materialLayer));
+            }
             materialFile.put(entry.getKey(), textureFile);
         }
 
@@ -5996,7 +6884,7 @@ public final class BlueprintBake {
             Layer layer = layerOfMaterial(mat, materialLayer);
             Alpha alpha = texturePath == null
                 ? new Alpha(Layer.SOLID, 1.0f) : textureAlpha(texturePath);
-            if (forcedAlpha(layer, alpha)) {
+            if (forcedAlpha(mat, layer, alpha)) {
                 String source = materialFile.get(mat);
                 String alphaFile = source == null ? null : alphaOfSource.get(source);
                 if (alphaFile == null) {
@@ -6054,6 +6942,9 @@ public final class BlueprintBake {
         int alphaDLogged = 0;
         int cutoutMaskCount = 0;
         int cutoutMaskLogged = 0;
+        // Every `map_Kd` this .mtl actually wrote, so the audit after the file is closed checks the
+        // same strings Blender will resolve rather than a recomputation of them.
+        Map<String, String> writtenMapKd = new LinkedHashMap<>();
         try (BufferedWriter w = Files.newBufferedWriter(mtl)) {
             w.write("# Sable blueprint export materials\n");
             for (String mat : byMaterial.keySet()) {
@@ -6068,6 +6959,13 @@ public final class BlueprintBake {
                 String mapFile = forced ? forcedAlphaFile.get(mat) : file;
                 w.write("\nnewmtl " + mat + "\n");
                 w.write("# layer: " + layer.name().toLowerCase(java.util.Locale.ROOT) + "\n");
+                // Where this material's image and coordinates came from, when they were not its
+                // own: `uv-rebuilt: flat`, `uv: window, ...`, or `uv: rescaled by=...`. Written
+                // beside the material so the reason is readable without the log.
+                String repairNote = repairNotes.get(mat);
+                if (repairNote != null) {
+                    w.write("# " + repairNote + "\n");
+                }
                 if (layer != Layer.SOLID) {
                     w.write("# double_sided: true\n");
                     doubleSided++;
@@ -6084,10 +6982,21 @@ public final class BlueprintBake {
                     // was the only other channel, which Blender's own OBJ importer never reads off
                     // a map_Kd image. `translucentD` is the single source of the number, so this
                     // line, its log line and the summary below cannot disagree.
-                    float d = translucentD(alpha);
+                    // `translucentD` is the single source of the number, so this line, its log
+                    // line and the summary below cannot disagree.
+                    //
+                    // The wheel family is its own case rather than a bent clamp: a tyre drawn on
+                    // the translucent sheet is solid rubber, so its dissolve is 0 and its sprite
+                    // keeps its own opacity. Writing 0.6 for it is what turned four wheels into one
+                    // flat dark pane. See `wheelSolidPart`.
+                    boolean wheelSolid = wheelSolidPart(mat);
+                    float d = wheelSolid ? 1.0f : translucentD(alpha);
                     if (forced) {
                         w.write(String.format(java.util.Locale.ROOT,
                             "# layer-translucency: forced(%.3f)\n", FORCED_ALPHA_D));
+                    } else if (wheelSolid) {
+                        w.write("# layer-translucency: solid(wheel;"
+                            + " the render type sorts, it does not dissolve)\n");
                     }
                     w.write(String.format(java.util.Locale.ROOT, "d %.3f\n", d));
                     w.write(String.format(java.util.Locale.ROOT, "Tr %.3f\n", 1.0f - d));
@@ -6101,7 +7010,7 @@ public final class BlueprintBake {
                             mat,
                             String.format(java.util.Locale.ROOT, "%.3f", alpha.mean()),
                             String.format(java.util.Locale.ROOT, "%.3f", d),
-                            translucentDSource(alpha),
+                            wheelSolid ? "solid" : translucentDSource(alpha),
                             mapFile == null || mapFile.isEmpty() ? "-" : mapFile);
                     }
                 } else if (layer == Layer.CUTOUT) {
@@ -6134,9 +7043,10 @@ public final class BlueprintBake {
                     w.write("d 1.0\nillum 1\n");
                 }
                 if (mapFile != null && !mapFile.isEmpty()) {
-                    // Relative to the output folder, with forward slashes, which is what
+                    // Relative to this export's own folder, with forward slashes, which is what
                     // Blender's OBJ importer resolves against the .mtl's own directory.
                     w.write("map_Kd " + mapFile + "\n");
+                    writtenMapKd.put(mat, mapFile);
                 }
                 if (forced) {
                     forcedCount++;
@@ -6162,8 +7072,255 @@ public final class BlueprintBake {
                     layer.name().toLowerCase(java.util.Locale.ROOT),
                     file == null ? "-" : file, "local", byMaterial.get(mat).size(),
                     String.format(java.util.Locale.ROOT, "%.3f", alpha.mean()));
+                // One line per sail or wheel material, in the shape the acceptance reads.
+                //
+                // These two families are the ones whose textures keep going wrong, and the log
+                // was the one place that could not say which tile a face had actually landed on:
+                // the `material:` line above names the file but not the coordinates, and the
+                // coordinates are the whole question for a sail (0..1 cloth vs a 3/16 frame) and
+                // for a belt (a one-texel window). Both are measured here from the faces the
+                // .obj is about to write, so the numbers cannot disagree with the model.
+                String kind = evidenceKind(mat);
+                if (kind != null && SAILWHEEL_LOGGED < SAILWHEEL_LINES) {
+                    SAILWHEEL_LOGGED++;
+                    MaterialUv measured = measureUv(byMaterial.get(mat));
+                    String mask = cutoutMaskFile.get(mat);
+                    String spaceWord = measured.uMin() < -1.001f || measured.uMax() > 1.001f
+                        || measured.vMin() < -1.001f || measured.vMax() > 1.001f
+                        ? "outside"
+                        : (measured.wholeSheet() ? "local"
+                            : (measured.faceSpan() < 1f / 64f ? "atlas" : "local"));
+                    // `sprite-src` is the field the wheel report is read on: it says which of the
+                    // routes named the image - the block's own model, the renderer's own
+                    // coordinates, a majority vote over the block, or a tile borrowed from an
+                    // atlas position - so "the idler has the wrong texture" can be answered
+                    // without guessing at which step went wrong.
+                    BlueprintExporter.LOGGER.info(
+                        "{}: block={} material={} sprite-src={} layer={} quads={} uv=u{} v{}"
+                        + " tile={} map_Kd={} map_d={} space={}",
+                        kind,
+                        MATERIAL_BLOCKS.getOrDefault(mat, new java.util.LinkedHashSet<>()),
+                        mat,
+                        MATERIAL_SPRITE_SRC.getOrDefault(mat, "unknown"),
+                        layer.name().toLowerCase(java.util.Locale.ROOT),
+                        byMaterial.get(mat).size(),
+                        pair(measured.uMin(), measured.uMax()),
+                        pair(measured.vMin(), measured.vMax()),
+                        texturePath == null || texturePath.isEmpty() ? "none" : texturePath,
+                        mapFile == null || mapFile.isEmpty() ? "-" : mapFile,
+                        mask == null || mask.isEmpty() ? "-" : mask,
+                        spaceWord);
+                }
+                // Where the wheel family's quads actually are, and under how many transforms.
+                //
+                // The textures and the geometry fail in ways that look the same in Blender - a
+                // wheel reads as a fan of stray triangles either way - so both are measured, and
+                // this is the geometry half. `frames-seen` is the number of DISTINCT transforms the
+                // material's quads were placed with: one means the whole material came from a
+                // single piece, more than one means it spans several - a belt with its wheels, a
+                // vehicle's four corners - and each quad must still carry its own. A wheel that is
+                // "twisted" while `frames-seen` is 1 and the span is sane is not a transform fault,
+                // and a wheel that is twisted while the bbox is a block across is.
+                // The budget is spent on the wheel family only: sails are reported by their own
+                // line, and letting them take the twenty would be how a ship with a dozen sails
+                // hides the wheels this line exists for.
+                if (kind != null && !kind.startsWith("sail") && WHEEL_GEOM_LOGGED < WHEEL_GEOM_LINES) {
+                    WHEEL_GEOM_LOGGED++;
+                    java.util.List<Face> geoms = byMaterial.get(mat);
+                    java.util.Set<Integer> frames = new java.util.HashSet<>();
+                    float minX = Float.MAX_VALUE;
+                    float minY = Float.MAX_VALUE;
+                    float minZ = Float.MAX_VALUE;
+                    float maxX = -Float.MAX_VALUE;
+                    float maxY = -Float.MAX_VALUE;
+                    float maxZ = -Float.MAX_VALUE;
+                    for (Face face : geoms) {
+                        frames.add(face.frameSerial);
+                        for (int i = 0; i < face.count; i++) {
+                            minX = Math.min(minX, face.pos[i * 3]);
+                            minY = Math.min(minY, face.pos[i * 3 + 1]);
+                            minZ = Math.min(minZ, face.pos[i * 3 + 2]);
+                            maxX = Math.max(maxX, face.pos[i * 3]);
+                            maxY = Math.max(maxY, face.pos[i * 3 + 1]);
+                            maxZ = Math.max(maxZ, face.pos[i * 3 + 2]);
+                        }
+                    }
+                    // `snapshots` is 0 only when no face of this material carried a captured
+                    // transform, i.e. the old "read the current state at flush" path ran.
+                    int snapshots = 0;
+                    for (int serial : frames) {
+                        if (serial != 0) {
+                            snapshots++;
+                        }
+                    }
+                    BlueprintExporter.LOGGER.info(
+                        "wheel-geom: material={} quads={} frames-seen={} bbox=({}..{} {}..{} {}..{})"
+                        + " span=({} {} {}) snapshots={}",
+                        mat, geoms.size(), frames.size(),
+                        fmt2(minX), fmt2(maxX), fmt2(minY), fmt2(maxY), fmt2(minZ), fmt2(maxZ),
+                        fmt2(maxX - minX), fmt2(maxY - minY), fmt2(maxZ - minZ),
+                        snapshots);
+                }
+                // The verdict line for a tyre: how many of the model's faces the capture kept.
+                //
+                // `wheel-geom:` above measures the faces that arrived, so it cannot say whether
+                // any failed to: a wheel reported as thirty-two clean quads reads the same whether
+                // it is a wheel or the ring left when its disc was dropped. This line compares the
+                // two numbers that do say it, both counted in the collector where a face arrives
+                // and where it is written.
+                //
+                // `model` is every face the model or the renderer handed over for this material,
+                // `exported` the ones written (before the reverse copy that a translucent material
+                // gets, which is why the .obj holds twice this number), `missing` their difference
+                // and `reason` the filter that took them.
+                //
+                // Measured on `region_20261031_170701`, four offroad `small_tire` wheels:
+                // `model=280 exported=216 missing=64`. The model is 70 faces per wheel - 54 quads
+                // and 16 triangles - and the 64 that were gone are exactly the triangles, which is
+                // exactly its `spokes` object: the disc between hub and rim, dropped as a
+                // degenerate strip because a padded triangle arrives as a quad with a repeated
+                // corner. That is the hollow wheel this line was added for.
+                if ("tire-tex".equals(kind) && WHEEL_FACES_LOGGED < WHEEL_FACES_LINES) {
+                    try {
+                        int[] ledger = collector.quadLedger(mat);
+                        if (ledger != null && ledger[0] > 0) {
+                            WHEEL_FACES_LOGGED++;
+                            int missing = Math.max(0, ledger[0] - ledger[1]);
+                            String reason;
+                            if (missing == 0) {
+                                reason = "none";
+                            } else if (ledger[2] > 0) {
+                                reason = "degenerate-filter";
+                            } else {
+                                reason = "other-material";
+                            }
+                            BlueprintExporter.LOGGER.info(
+                                "wheel-faces: model={} exported={} missing={} reason={}",
+                                ledger[0], ledger[1], missing, reason);
+                        }
+                    } catch (Throwable t) {
+                        // A measurement must never take an export down; the geometry is already
+                        // written by the time this runs.
+                        BlueprintExporter.LOGGER.warn("wheel-faces: count failed: {}", t.toString());
+                    }
+                }
             }
         }
+        // The audit that answers "will every one of these resolve".
+        //
+        // Every `map_Kd` this .mtl wrote, checked against the disk inside this export's own folder.
+        // It has to run here: the paths are relative to that folder and to nowhere else, so a file
+        // that exists one directory up is still a broken material, and that is exactly the failure
+        // a shared output root used to produce. A material with no `map_Kd` at all is counted
+        // separately - it is a white surface in Blender, and it is not the same fault as a path
+        // that points at nothing.
+        int missingTextures = 0;
+        int missingLogged = 0;
+        int noTextureMaterials = 0;
+        for (String mat : byMaterial.keySet()) {
+            String mapFile = writtenMapKd.get(mat);
+            if (mapFile == null || mapFile.isEmpty()) {
+                noTextureMaterials++;
+                continue;
+            }
+            boolean present;
+            try {
+                Path png = outDir.resolve(mapFile);
+                present = Files.isRegularFile(png) && Files.size(png) > 0L;
+            } catch (Throwable ignored) {
+                present = false;
+            }
+            if (present) {
+                continue;
+            }
+            missingTextures++;
+            if (missingLogged < TEX_MISSING_LINES) {
+                missingLogged++;
+                BlueprintExporter.LOGGER.info("tex-missing: file={} used-by={}.mtl:{}",
+                    mapFile, name, mat);
+            }
+        }
+        BlueprintExporter.LOGGER.info(
+            "tex-missing: count={} no-map_Kd={} materials={} dir={}",
+            missingTextures, noTextureMaterials, byMaterial.size(), outDir.getFileName());
+        // The invariant the repair pass exists to keep, checked against the file that was just
+        // written: a material with no image must say so in its own name. Anything else is a
+        // silent white surface, which is exactly how `M_solid_minecraft_missingno` survived
+        // eleven exports without anybody being told.
+        java.util.List<String> silentWhite = new ArrayList<>();
+        for (String mat : byMaterial.keySet()) {
+            String mapFile = writtenMapKd.get(mat);
+            if (mapFile != null && !mapFile.isEmpty()) {
+                continue;
+            }
+            if (!mat.contains("_untextured")) {
+                silentWhite.add(mat);
+            }
+        }
+        if (!silentWhite.isEmpty() || noTextureMaterials > 0) {
+            BlueprintExporter.LOGGER.warn(
+                "tex-missing: WARN no-map_Kd={} untextured={} silent=[{}]",
+                noTextureMaterials, noTextureMaterials - silentWhite.size(),
+                String.join(", ", silentWhite));
+        }
+
+        // The entity pass's own verdict, and the check that it actually reached the file.
+        //
+        // `resolved` and `unresolved` are face counts from the pass itself: faces filed under an
+        // image the render type or the renderer named, and faces nothing could name. `no-map-Kd` is
+        // the number of materials that carry an entity id and still have no image line after the
+        // .mtl was written - the one number that answers the report this pass exists for, because
+        // it is read off the file rather than off the intent. A material that is still without an
+        // image is named here instead of being left for whoever opens the .mtl.
+        int entityNoMapKd = 0;
+        java.util.List<String> entityNoMapKdNames = new ArrayList<>();
+        for (String mat : byMaterial.keySet()) {
+            if (!isEntityMaterial(mat)) {
+                continue;
+            }
+            String mapFile = writtenMapKd.get(mat);
+            if (mapFile != null && !mapFile.isEmpty()) {
+                continue;
+            }
+            entityNoMapKd++;
+            if (entityNoMapKdNames.size() < 12) {
+                entityNoMapKdNames.add(mat);
+            }
+        }
+        BlueprintExporter.LOGGER.info("entity-tex: summary resolved={} unresolved={} no-map-Kd={}",
+            ENTITY_TEX_RESOLVED, ENTITY_TEX_UNRESOLVED, entityNoMapKd);
+        if (entityNoMapKd > 0) {
+            BlueprintExporter.LOGGER.warn("entity-tex: WARN no-map_Kd={} materials=[{}]",
+                entityNoMapKd, String.join(", ", entityNoMapKdNames));
+        }
+        // Per-run bookkeeping, cleared for the next export: a counter that survived would make the
+        // next structure's summary add this one's faces, and a stale entity id would let a block
+        // material be classified as an entity material.
+        ENTITY_TEXTURES.clear();
+        ENTITY_LABELS.clear();
+        ENTITY_TEX_RESOLVED = 0;
+        ENTITY_TEX_UNRESOLVED = 0;
+        ENTITY_TEX_LOGGED = 0;
+        // The sail / wheel probe's own bookkeeping, for the same reason: a label that survived
+        // would let the next export read a previous structure's block map, and an entity is not a
+        // thing to hold on to once its geometry has been written.
+        ENTITY_BY_LABEL.clear();
+        ENTITY_RENDERER_TEXTURE.clear();
+        MODEL_SPRITE_RECTS.cache.clear();
+        // One `wheel-cluster:` line per wheel, tread block or suspension plate the export wrote.
+        //
+        // Measured on the faces themselves rather than on the material's single bounding box,
+        // because a box cannot tell the two faults apart that this line exists for: four wheels
+        // that are each a sound disc and one wheel that is a flat plate both report a material
+        // box of a whole vehicle. Clustered at 0.6 blocks - wider than one tread block, far
+        // narrower than the gap between two wheels - each cluster is one part, and its own span
+        // says whether that part is a disc (two axes equal, the third at least 0.4 thick), a plate
+        // (one axis near zero) or a fragment (many clusters over one part).
+        logWheelClusters(byMaterial);
+        SAILWHEEL_LOGGED = 0;
+        WHEEL_GEOM_LOGGED = 0;
+        WHEEL_CLUSTER_LOGGED = 0;
+
         // The summary that answers "did anything need its transparency written for it": zero means
         // every translucent material already carried its own alpha in its pixels.
         BlueprintExporter.LOGGER.info("material: forced-alpha count={}", forcedCount);
@@ -6221,7 +7378,8 @@ public final class BlueprintBake {
                 entryLayer.name().toLowerCase(java.util.Locale.ROOT), entry.getKey(),
                 mapFile,
                 String.format(java.util.Locale.ROOT, "%.3f", alpha.mean()),
-                String.format(java.util.Locale.ROOT, "%.3f", translucentD(alpha)),
+                String.format(java.util.Locale.ROOT, "%.3f",
+                    wheelSolidPart(entry.getKey()) ? 1.0f : translucentD(alpha)),
                 entryLayer != Layer.SOLID,
                 String.format(java.util.Locale.ROOT, "%.3f", alpha.holes()));
         }
@@ -6443,16 +7601,29 @@ public final class BlueprintBake {
         py.append("#   sub00                  -> collection \"World\"\n");
         py.append("#   sub01, sub02, ...      -> collection \"Sable_<label>\"\n");
         py.append("#   subNN_partM / subNN_*  -> that group's sub-collection \"parts\"\n");
+        py.append("# All of it sits inside one top-level collection named after the .obj, so\n");
+        py.append("# the whole export is a single selection in the outliner:\n");
+        py.append("#   ").append(name).append("  <- root (right-click -> Select Objects)\n");
+        py.append("#     World / Sable_* / Other\n");
+        py.append("# Safe to run twice, and safe to run after File > Import > Wavefront by hand:\n");
+        py.append("# the objects this export made are recognised by those `o` names and moved,\n");
+        py.append("# not imported a second time. Blender keeps data-block names unique, so a\n");
+        py.append("# repeated `sub01` arrives as `sub01.001`; that suffix is stripped before the\n");
+        py.append("# prefix is read, or every piece of a re-run would fall into \"parts\".\n");
         py.append("import os\n");
         py.append("import re\n");
         py.append("\n");
         py.append("import bpy\n");
         py.append("\n");
         py.append("OBJ_NAME = ").append(pyString(name + ".obj")).append("\n");
+        py.append("# The top-level collection the whole export lives in, named after the .obj.\n");
+        py.append("ROOT_NAME = ").append(pyString(name)).append("\n");
         py.append("PARTS = \"parts\"\n");
         py.append("# (group name, parts) -> the collection object, because Blender keeps data-block\n");
         py.append("# names unique and a second group's \"parts\" would be created over and over.\n");
         py.append("PART_COLLECTIONS = {}\n");
+        py.append("# The root collection, resolved once by root_collection().\n");
+        py.append("ROOT = None\n");
         py.append("# sub-level index -> collection suffix, as the export named it\n");
         py.append("LABELS = {");
         boolean first = true;
@@ -6495,26 +7666,74 @@ public final class BlueprintBake {
         py.append("    return None\n");
         py.append("\n");
         py.append("\n");
-        py.append("def import_obj(path):\n");
-        py.append("    \"\"\"Blender 4.x uses wm.obj_import; 3.x and older use import_scene.obj.\"\"\"\n");
+        py.append("def read_object_names(path):\n");
+        py.append("    \"\"\"The `o` names of the .obj, which are the names Blender gave the objects.\"\"\"\n");
+        py.append("    names = []\n");
         py.append("    try:\n");
-        py.append("        bpy.ops.wm.obj_import(filepath=path)\n");
-        py.append("        return \"wm.obj_import\"\n");
-        py.append("    except Exception as first_error:\n");
+        py.append("        with open(path, \"r\", encoding=\"utf-8\", errors=\"replace\") as handle:\n");
+        py.append("            for line in handle:\n");
+        py.append("                if line.startswith(\"o \"):\n");
+        py.append("                    name = line[2:].strip()\n");
+        py.append("                    if name:\n");
+        py.append("                        names.append(name)\n");
+        py.append("    except Exception as error:\n");
+        py.append("        print(\"[sable] could not read %s: %r\" % (path, error))\n");
+        py.append("    return names\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("def import_obj(path):\n");
+        py.append("    \"\"\"Blender 4.x uses wm.obj_import; 3.x and older use import_scene.obj.\n");
+        py.append("\n");
+        py.append("    Split-by-object is asked for explicitly: one object per `o` line is the whole\n");
+        py.append("    basis of the grouping below, and it must not depend on a preference default.\n");
+        py.append("    \"\"\"\n");
+        py.append("    attempts = [\n");
+        py.append("        (\"wm.obj_import\", lambda: bpy.ops.wm.obj_import(\n");
+        py.append("            filepath=path, use_split_objects=True, use_split_groups=False)),\n");
+        py.append("        (\"wm.obj_import\", lambda: bpy.ops.wm.obj_import(filepath=path)),\n");
+        py.append("        (\"import_scene.obj\", lambda: bpy.ops.import_scene.obj(filepath=path)),\n");
+        py.append("    ]\n");
+        py.append("    errors = []\n");
+        py.append("    for how, call in attempts:\n");
         py.append("        try:\n");
-        py.append("            bpy.ops.import_scene.obj(filepath=path)\n");
-        py.append("            return \"import_scene.obj\"\n");
-        py.append("        except Exception as second_error:\n");
-        py.append("            raise RuntimeError(\"OBJ import failed: %r / %r\"\n");
-        py.append("                             % (first_error, second_error))\n");
+        py.append("            call()\n");
+        py.append("            return how\n");
+        py.append("        except Exception as error:\n");
+        py.append("            errors.append(\"%s: %r\" % (how, error))\n");
+        py.append("    raise RuntimeError(\"OBJ import failed: \" + \" / \".join(errors))\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("def root_collection():\n");
+        py.append("    \"\"\"The one top-level collection the whole export lives in.\n");
+        py.append("\n");
+        py.append("    Named after the .obj, so a re-run finds it by name and reuses it instead\n");
+        py.append("    of nesting a second copy of the model inside a new one. World, the Sable_*\n");
+        py.append("    groups and Other are children of it, which is what makes the export one\n");
+        py.append("    click in the outliner: right-click it, Select Objects.\n");
+        py.append("    \"\"\"\n");
+        py.append("    global ROOT\n");
+        py.append("    if ROOT is None:\n");
+        py.append("        ROOT = collection(ROOT_NAME, bpy.context.scene.collection)\n");
+        py.append("    return ROOT\n");
         py.append("\n");
         py.append("\n");
         py.append("def collection(label, parent=None):\n");
-        py.append("    \"\"\"The child of parent called label, created if it is not there yet.\"\"\"\n");
+        py.append("    \"\"\"The child of parent called label, created if it is not there yet.\n");
+        py.append("\n");
+        py.append("    A group that an older version of this script left at the scene root is\n");
+        py.append("    adopted - moved under parent - rather than duplicated, so the first run\n");
+        py.append("    after updating does not leave an empty `World` at the top of the outliner.\n");
+        py.append("    \"\"\"\n");
         py.append("    owner = parent if parent is not None else bpy.context.scene.collection\n");
         py.append("    found = owner.children.get(label)\n");
         py.append("    if found is not None:\n");
         py.append("        return found\n");
+        py.append("    if parent is not None and parent is ROOT:\n");
+        py.append("        legacy = bpy.context.scene.collection.children.get(label)\n");
+        py.append("        if legacy is not None and legacy is not ROOT:\n");
+        py.append("            bpy.context.scene.collection.children.unlink(legacy)\n");
+        py.append("            parent.children.link(legacy)\n");
+        py.append("            return legacy\n");
         py.append("    created = bpy.data.collections.new(label)\n");
         py.append("    owner.children.link(created)\n");
         py.append("    return created\n");
@@ -6529,17 +7748,25 @@ public final class BlueprintBake {
         py.append("\n");
         py.append("\n");
         py.append("def parts_collection(group):\n");
-        py.append("    \"\"\"The `parts` child of a group, created once and then reused.\"\"\"\n");
+        py.append("    \"\"\"The `parts` child of a group, created once and then reused.\n");
+        py.append("\n");
+        py.append("    Blender keeps collection names unique, so the second group's `parts` is\n");
+        py.append("    called parts.001 and a re-run would not find it by that exact name - which\n");
+        py.append("    is how a second run ended up leaving the first run's parts empty and adding\n");
+        py.append("    three more of them. Any parts / parts.NNN child of this group is reused.\n");
+        py.append("    \"\"\"\n");
         py.append("    key = group.name\n");
         py.append("    found = PART_COLLECTIONS.get(key)\n");
         py.append("    if found is not None:\n");
         py.append("        return found\n");
-        py.append("    found = group.children.get(PARTS)\n");
-        py.append("    if found is None:\n");
-        py.append("        found = bpy.data.collections.new(PARTS)\n");
-        py.append("        group.children.link(found)\n");
-        py.append("    PART_COLLECTIONS[key] = found\n");
-        py.append("    return found\n");
+        py.append("    for child in group.children:\n");
+        py.append("        if child.name == PARTS or child.name.startswith(PARTS + \".\"):\n");
+        py.append("            PART_COLLECTIONS[key] = child\n");
+        py.append("            return child\n");
+        py.append("    created = bpy.data.collections.new(PARTS)\n");
+        py.append("    group.children.link(created)\n");
+        py.append("    PART_COLLECTIONS[key] = created\n");
+        py.append("    return created\n");
         py.append("\n");
         py.append("\n");
         py.append("def group_of(obj_name):\n");
@@ -6550,22 +7777,72 @@ public final class BlueprintBake {
         py.append("    return int(match.group(1)), match.group(2)\n");
         py.append("\n");
         py.append("\n");
+        py.append("def base_name(name, known):\n");
+        py.append("    \"\"\"The `o` name this object came from, or None if it is not this export's.\n");
+        py.append("\n");
+        py.append("    Blender keeps data-block names unique, so a second import of the same mesh\n");
+        py.append("    arrives as sub01.001 and a repeated piece as ..._0.001. Reading the prefix\n");
+        py.append("    off the raw name would treat that \".001\" as a part suffix, which is why a\n");
+        py.append("    re-run used to put even the sub-level roots into \"parts\". Stripping it first\n");
+        py.append("    is what makes the grouping survive a second run and a hand import.\n");
+        py.append("    \"\"\"\n");
+        py.append("    if name in known:\n");
+        py.append("        return name\n");
+        py.append("    dot = name.rfind(\".\")\n");
+        py.append("    if dot > 0 and len(name) - dot == 4 and name[dot + 1:].isdigit():\n");
+        py.append("        trimmed = name[:dot]\n");
+        py.append("        if trimmed in known:\n");
+        py.append("            return trimmed\n");
+        py.append("    if len(name) >= 16:\n");
+        py.append("        for candidate in known:\n");
+        py.append("            if candidate.startswith(name):\n");
+        py.append("                return candidate\n");
+        py.append("    return None\n");
+        py.append("\n");
+        py.append("\n");
+        py.append("def export_members(known):\n");
+        py.append("    \"\"\"(object, `o` name) for everything in the file that this export made.\n");
+        py.append("\n");
+        py.append("    The `o` names are the filter, so an object the player built or imported from\n");
+        py.append("    somewhere else is never moved - only what this .obj put in the scene is.\n");
+        py.append("    \"\"\"\n");
+        py.append("    members = []\n");
+        py.append("    for obj in bpy.data.objects:\n");
+        py.append("        base = base_name(obj.name, known)\n");
+        py.append("        if base is not None:\n");
+        py.append("            members.append((obj, base))\n");
+        py.append("    return members\n");
+        py.append("\n");
+        py.append("\n");
         py.append("def main():\n");
         py.append("    path = find_obj()\n");
         py.append("    if path is None:\n");
         py.append("        print(\"[sable] %s not found next to this script\" % OBJ_NAME)\n");
         py.append("        return\n");
-        py.append("    known = set(bpy.data.objects.keys())\n");
-        py.append("    how = import_obj(path)\n");
-        py.append("    imported = [bpy.data.objects[key] for key in bpy.data.objects.keys()\n");
-        py.append("                if key not in known]\n");
-        py.append("    print(\"[sable] %d object(s) from %s via %s\" % (len(imported), path, how))\n");
-        py.append("    world = collection(\"World\")\n");
+        py.append("    known = set(read_object_names(path))\n");
+        py.append("    if not known:\n");
+        py.append("        print(\"[sable] %s has no `o` lines, so there is nothing to group\"\n");
+        py.append("              % OBJ_NAME)\n");
+        py.append("        return\n");
+        py.append("    members = export_members(known)\n");
+        py.append("    how = \"already in this file\"\n");
+        py.append("    if len(members) < len(known):\n");
+        py.append("        how = import_obj(path)\n");
+        py.append("        members = export_members(known)\n");
+        py.append("    print(\"[sable] %d of %d object(s) of %s (%s)\"\n");
+        py.append("          % (len(members), len(known), path, how))\n");
+        py.append("    root = root_collection()\n");
+        py.append("    world = collection(\"World\", root)\n");
         py.append("    groups = {}\n");
-        py.append("    for obj in imported:\n");
-        py.append("        key = group_of(obj.name)\n");
+        py.append("    other = None\n");
+        py.append("    placed = 0\n");
+        py.append("    for obj, base in members:\n");
+        py.append("        key = group_of(base)\n");
         py.append("        if key is None:\n");
-        py.append("            move_to(obj, collection(\"Other\"))\n");
+        py.append("            if other is None:\n");
+        py.append("                other = collection(\"Other\", root)\n");
+        py.append("            move_to(obj, other)\n");
+        py.append("            placed += 1\n");
         py.append("            continue\n");
         py.append("        index, suffix = key\n");
         py.append("        if index == 0:\n");
@@ -6573,17 +7850,32 @@ public final class BlueprintBake {
         py.append("        else:\n");
         py.append("            group = groups.get(index)\n");
         py.append("            if group is None:\n");
-        py.append("                group = collection(\"Sable_\" + LABELS.get(index, \"%02d\" % index))\n");
+        py.append("                group = collection(\"Sable_\" + LABELS.get(index, \"%02d\" % index), root)\n");
         py.append("                groups[index] = group\n");
         py.append("        if suffix:\n");
         py.append("            move_to(obj, parts_collection(group))\n");
         py.append("        else:\n");
         py.append("            move_to(obj, group)\n");
-        py.append("    names = sorted(entry.name for entry in bpy.data.collections)\n");
-        py.append("    print(\"[sable] collections: %s\" % \", \".join(names))\n");
+        py.append("        placed += 1\n");
+        py.append("    report = [(\"World\", world)]\n");
+        py.append("    report.extend(sorted(((group.name, group) for group in groups.values()),\n");
+        py.append("                         key=lambda pair: pair[0]))\n");
+        py.append("    if other is not None:\n");
+        py.append("        report.append((\"Other\", other))\n");
+        py.append("    print(\"groups:\", [label for label, _ in report])\n");
+        py.append("    for label, coll in report:\n");
+        py.append("        print(\"  %-18s %4d\" % (label, len(coll.all_objects)))\n");
+        py.append("    print(\"root collection: %s   (children: %s)\"\n");
+        py.append("          % (root.name, \", \".join(label for label, _ in report)))\n");
+        py.append("    print(\"objects placed: %d of %d\" % (placed, len(members)))\n");
         py.append("\n");
         py.append("\n");
-        py.append("main()\n");
+        py.append("try:\n");
+        py.append("    main()\n");
+        py.append("except Exception as error:\n");
+        py.append("    print(\"[sable] grouping failed, the mesh itself is untouched: %r\"\n");
+        py.append("          % (error,))\n");
+        py.append("    raise\n");
         return py.toString();
     }
 
@@ -6615,8 +7907,10 @@ public final class BlueprintBake {
         readme.append("2. 大纲视图会出现 World（世界方块 sub00）与 ")
             .append(labels.size() <= 1 ? "Sable_*（子关卡）" : "Sable_*（每个子关卡一个）")
             .append("；每组里的 parts 子集合放 *_partN（第二个起 Blender 会叫 parts.001）。\n");
-        readme.append("3. 不想跑脚本也行：File → Import → Wavefront (.obj)，再按对象名前缀 subNN 手工分组。\n");
+        readme.append("3. 不想跑脚本也行：File → Import → Wavefront (.obj) 之后仍可运行脚本，它按 `o` 名归位、不会重复导入。\n");
         readme.append("4. .obj / .mtl / textures 必须放在同一目录，否则材质没有贴图。\n");
+        readme.append("5. 整套模型都在根集合「").append(name)
+            .append("」里（World / Sable_* / Other 是它的子集合）；双击/右键根集合 → Select Objects 可一次选中整套模型，移动、缩放、隐藏也只需动这一层。\n");
         return readme.toString();
     }
 
@@ -6768,9 +8062,44 @@ public final class BlueprintBake {
      * render layer it is drawn on, and a texture that is painted fully opaque tells the exporter
      * nothing about it. Materials that already blend through their own pixels keep their measured
      * alpha and are not touched.</p>
+     *
+     * <p><b>A wheel is the one family this rule must not reach.</b> A tyre, a track belt and a
+     * suspension plate are solid parts: the wheel-mount renderer asks for the translucent sheet to
+     * get them depth-sorted against the vehicle, and draws them with an opaque sprite. Writing
+     * {@code d 0.600} and a 60%-alpha copy for them is what made the deployed export's wheels read
+     * as a dark sheet of glass lying over the machine - measured on
+     * {@code region_20261031_170701}, where all three wheel materials had
+     * {@code alpha_mean=1.000 source=forced d=0.600} and the whole tyre, belt ring and suspension
+     * disappeared into one flat translucent slab. They are left with their measured alpha (0.95 in
+     * practice, from {@link #TRANSLUCENT_D_MAX}), so the tread is visible.</p>
+     *
+     * <p>The tank track ({@code *_track_mount}) keeps the old behaviour on purpose: it is a
+     * different block with its own acceptance and is not part of this change.</p>
      */
-    private static boolean forcedAlpha(Layer layer, Alpha alpha) {
-        return layer == Layer.TRANSLUCENT && alpha != null && alpha.mean() >= FORCED_ALPHA_THRESHOLD;
+    private static boolean forcedAlpha(String material, Layer layer, Alpha alpha) {
+        if (layer != Layer.TRANSLUCENT || alpha == null || alpha.mean() < FORCED_ALPHA_THRESHOLD) {
+            return false;
+        }
+        return !wheelSolidPart(material);
+    }
+
+    /**
+     * Whether this material is one of the wheel family's solid parts - tyre, belt, suspension.
+     *
+     * <p>Deliberately narrow and name-based, because there is no pixel evidence to go on: every
+     * one of these uses a sprite painted at full alpha, which is exactly the signature of the
+     * opaque sheet the forcing rule exists for. The tank track is excluded by name, as above.</p>
+     */
+    private static boolean wheelSolidPart(String material) {
+        if (material == null) {
+            return false;
+        }
+        String lower = material.toLowerCase(Locale.ROOT);
+        if (lower.contains("track_mount")) {
+            return false;
+        }
+        return lower.contains("tire") || lower.contains("tyre")
+            || lower.contains("belt") || lower.contains("suspension");
     }
 
     /**
@@ -6910,6 +8239,1601 @@ public final class BlueprintBake {
      * the {@code .png} suffix, depending on how the mod authored it. Returns the
      * output-relative path that was written, or null.
      */
+    // ------------------------------------------------------------ untextured materials
+
+    /**
+     * How many {@code tex-uv:} lines one export may write.
+     *
+     * <p>One line per material that reaches the writer with no image at all - the population this
+     * whole section exists for - so the budget matches {@link #TEX_MISSING_LINES} and a big
+     * structure cannot flood the log.
+     */
+    private static final int TEX_UV_LINES = 20;
+
+    /**
+     * How many {@code sail-tex:} / {@code wheel-tex:} lines one export may write.
+     *
+     * <p>Forty, so a ship with a dozen sails and a dozen wheels is fully covered while a deck of
+     * copycat cogwheels cannot flood the log. Every line is measured from the faces the .obj is
+     * about to receive, so a truncated list is a shorter list, never a wrong one.</p>
+     */
+    private static final int SAILWHEEL_LINES = 40;
+    private static int SAILWHEEL_LOGGED = 0;
+
+    /**
+     * How many {@code wheel-geom:} lines one export may write.
+     *
+     * <p>Twenty, because the question it answers is about the wheel family and a big vehicle has a
+     * handful of those materials - belt, tyre, idler, suspension - not hundreds. The line is read
+     * together with the {@code wheel-tex:} one beside it: that one says which image a material
+     * got, this one says where its quads actually are.</p>
+     */
+    private static final int WHEEL_GEOM_LINES = 20;
+    private static int WHEEL_GEOM_LOGGED = 0;
+
+    /**
+     * How many {@code wheel-faces:} lines one export may write.
+     *
+     * <p>Six, one per tyre material: the question - did any of the tyre's faces go missing on the
+     * way into the .obj - is asked of the tyre family alone, and a vehicle carries one tyre sprite,
+     * two at most. The line is deliberately separate from {@code wheel-geom:}, which measures the
+     * faces that survived and therefore cannot say whether any did not.</p>
+     */
+    private static final int WHEEL_FACES_LINES = 6;
+    private static int WHEEL_FACES_LOGGED = 0;
+
+    /** How many times closing a half-written face threw, capped for the same reason. */
+    private static int PARTIAL_CLOSE_FAILED = 0;
+
+    /**
+     * Which evidence line a material belongs on, or null for the ones neither family covers.
+     *
+     * <p>Matched on the material name, which is the sprite's own name plus the part it belongs to,
+     * so it cannot miss a sail drawn by a renderer: the name is built from the texture, and a sail
+     * is either a sail texture or a sail part. Both families are reported because both are what
+     * the user kept reporting as "still not right".</p>
+     */
+    private static String evidenceKind(String material) {
+        if (material == null) {
+            return null;
+        }
+        String lower = material.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("sail") || lower.contains("diagram")) {
+            return "sail-tex";
+        }
+        // A tyre or an idler is reported on its own line, because "the tyre is still wrong" and
+        // "the track plates are the wrong way round" are two different faults and the two lines
+        // are what tell them apart.
+        if (lower.contains("tire") || lower.contains("tyre") || lower.contains("idler")) {
+            return "tire-tex";
+        }
+        if (lower.contains("wheel") || lower.contains("belt") || lower.contains("rim")
+                || lower.contains("track") || lower.contains("suspension")) {
+            return "wheel-tex";
+        }
+        return null;
+    }
+
+    /**
+     * How far apart two faces may be and still belong to the same wheel, in blocks.
+     *
+     * <p>Measured on {@code region_20261031_170701}: a tread block is 0.03..0.31 of a sprite over
+     * faces that touch, so adjacent blocks of one tyre are well under 0.1 apart, while the four
+     * wheels of the vehicle seen there are 2.5 and 5 blocks apart. 0.6 is wide enough to bridge a
+     * gap in a low-poly octagonal tyre and far too narrow to merge two wheels, which is the whole
+     * requirement: a cluster has to be one part for its span to mean anything.</p>
+     */
+    private static final float WHEEL_CLUSTER_SPAN = 0.6f;
+
+    /**
+     * How many {@code wheel-cluster:} lines one export may write.
+     *
+     * <p>Thirty, and the budget is spent in a fixed order - tyres first, then track belts, then
+     * suspensions, then the rest of the wheel family - so a vehicle with many parts still reports
+     * every tyre and every belt before it spends a line on a belt tensioner. A big ship cannot
+     * flood the log, and the last line says how much was cut.</p>
+     */
+    private static final int WHEEL_CLUSTER_LINES = 30;
+    private static int WHEEL_CLUSTER_LOGGED = 0;
+
+    /**
+     * Report each part of the wheel family as its own cluster, measured from its faces.
+     *
+     * <p>The line exists because the two faults look identical from the outside: "the tyre is a
+     * flat plate" and "the tyre is fine but drawn twice" both show up in Blender as an octagonal
+     * shape, and neither can be read off a material-level bounding box - four sound wheels and one
+     * flat plate covering a vehicle report the same box. Clustered, they differ: a disc has its two
+     * large axes equal and its thickness at 0.4 or more, a plate has one axis at zero, a shape that
+     * is not round has one axis twice the other, and a wheel that is broken into many clusters was
+     * never connected geometry.</p>
+     *
+     * <p>Single-linkage at {@link #WHEEL_CLUSTER_SPAN}, over face centroids, union-find. Quadratic
+     * in the material's face count, which is bounded here on purpose: only the tread-sized family
+     * is measured ({@code tire}/{@code belt}/{@code suspension}), and the largest such material in
+     * the deployed export is the tyre at 432 faces.</p>
+     */
+    private static void logWheelClusters(Map<String, List<Face>> byMaterial) {
+        try {
+            List<String> order = new ArrayList<>();
+            for (Map.Entry<String, List<Face>> entry : byMaterial.entrySet()) {
+                String lower = entry.getKey().toLowerCase(Locale.ROOT);
+                if (!lower.contains("tire") && !lower.contains("tyre")
+                        && !lower.contains("belt") && !lower.contains("suspension")) {
+                    continue;
+                }
+                if (entry.getValue().size() < 2) {
+                    continue;
+                }
+                order.add(entry.getKey());
+            }
+            if (order.isEmpty()) {
+                return;
+            }
+            // Fixed budget order: tyre, track belt, suspension, then anything else that matched.
+            order.sort((a, b) -> {
+                int ra = wheelClusterRank(a);
+                int rb = wheelClusterRank(b);
+                return ra != rb ? Integer.compare(ra, rb) : a.compareTo(b);
+            });
+            boolean cut = false;
+            int parts = 0;
+            int dropped = 0;
+            for (String mat : order) {
+                List<Face> faces = byMaterial.get(mat);
+                List<List<Face>> clusters = clusterFaces(faces, WHEEL_CLUSTER_SPAN);
+                parts += clusters.size();
+                int index = 0;
+                for (List<Face> cluster : clusters) {
+                    index++;
+                    if (WHEEL_CLUSTER_LOGGED >= WHEEL_CLUSTER_LINES - 1) {
+                        cut = true;
+                        dropped++;
+                        continue;
+                    }
+                    float minX = Float.MAX_VALUE;
+                    float minY = Float.MAX_VALUE;
+                    float minZ = Float.MAX_VALUE;
+                    float maxX = -Float.MAX_VALUE;
+                    float maxY = -Float.MAX_VALUE;
+                    float maxZ = -Float.MAX_VALUE;
+                    for (Face face : cluster) {
+                        for (int i = 0; i < face.count; i++) {
+                            minX = Math.min(minX, face.pos[i * 3]);
+                            minY = Math.min(minY, face.pos[i * 3 + 1]);
+                            minZ = Math.min(minZ, face.pos[i * 3 + 2]);
+                            maxX = Math.max(maxX, face.pos[i * 3]);
+                            maxY = Math.max(maxY, face.pos[i * 3 + 1]);
+                            maxZ = Math.max(maxZ, face.pos[i * 3 + 2]);
+                        }
+                    }
+                    float sx = maxX - minX;
+                    float sy = maxY - minY;
+                    float sz = maxZ - minZ;
+                    // thinnest / middle / widest, so the verdict reads the same for a wheel whose
+                    // axle is on X, on Y or on Z - the three world axes mean nothing here.
+                    float thin = Math.min(sx, Math.min(sy, sz));
+                    float wide = Math.max(sx, Math.max(sy, sz));
+                    float mid = sx + sy + sz - thin - wide;
+                    // The test the wheel report is read on, and it is on the two LARGE axes: a
+                    // wheel is a disc, so the two long axes are the diameter and have to be equal,
+                    // while the short axis is the tread width and only has to be a real thickness.
+                    // Comparing the thickness with the diameter instead - 0.65 against 1.60 on the
+                    // deployed tyre - would call every sound wheel deformed.
+                    float discRatio = wide <= 1e-6f ? 0f : mid / wide;
+                    String matLower = mat.toLowerCase(Locale.ROOT);
+                    boolean isWheel = matLower.contains("tire") || matLower.contains("tyre")
+                        || matLower.contains("idler");
+                    String verdict;
+                    if (!isWheel) {
+                        // A belt loop or a suspension plate is a part, not a wheel: its numbers are
+                        // still reported, but the disc test does not apply to it and saying
+                        // "deformed" about a spring's 2-texel plate would be noise.
+                        verdict = "part";
+                    } else if (thin < 1e-3f) {
+                        verdict = "flattened";
+                    } else if (discRatio < 0.85f) {
+                        verdict = "deformed";
+                    } else if (thin < 0.4f) {
+                        verdict = "thin";
+                    } else if (clusters.size() > 1 && cluster.size() < 8) {
+                        verdict = "fragment";
+                    } else {
+                        verdict = "disc";
+                    }
+                    WHEEL_CLUSTER_LOGGED++;
+                    BlueprintExporter.LOGGER.info(
+                        "wheel-cluster: material={} cluster={}/{} faces={} bbox=({}..{} {}..{} {}..{})"
+                        + " span=({} {} {}) thin={} disc={} axis-ratio={} verdict={}",
+                        mat, index, clusters.size(), cluster.size(),
+                        fmt2(minX), fmt2(maxX), fmt2(minY), fmt2(maxY), fmt2(minZ), fmt2(maxZ),
+                        fmt2(sx), fmt2(sy), fmt2(sz), fmt2(thin), fmt2(mid),
+                        String.format(Locale.ROOT, "%.2f", discRatio),
+                        verdict);
+                }
+                if (cut) {
+                    break;
+                }
+            }
+            if (cut && WHEEL_CLUSTER_LOGGED < WHEEL_CLUSTER_LINES) {
+                WHEEL_CLUSTER_LOGGED++;
+                BlueprintExporter.LOGGER.info(
+                    "wheel-cluster: truncated=yes clusters-written={} clusters-dropped={} parts={}",
+                    WHEEL_CLUSTER_LOGGED - 1, dropped, parts);
+            }
+        } catch (Throwable t) {
+            // A diagnostic that fails is not worth a crash, and the export it describes is already
+            // complete by the time this runs.
+            BlueprintExporter.LOGGER.warn("wheel-cluster: failed {}", t.toString());
+        }
+    }
+
+    /** Budget order for the {@code wheel-cluster:} lines: 0 tyre, 1 belt, 2 suspension, 3 rest. */
+    private static int wheelClusterRank(String material) {
+        String lower = material.toLowerCase(Locale.ROOT);
+        if (lower.contains("tire") || lower.contains("tyre")) {
+            return 0;
+        }
+        if (lower.contains("belt")) {
+            return 1;
+        }
+        if (lower.contains("suspension")) {
+            return 2;
+        }
+        return 3;
+    }
+
+    /**
+     * Group faces whose centroids are within {@code threshold} of each other, single-linkage.
+     *
+     * <p>Union-find over the centroid list, no spatial index: the material has at most a few
+     * hundred faces by construction and an index would be more code than it saves. Returns the
+     * groups in descending face count, so the first lines of a log are the parts that matter.</p>
+     */
+    private static List<List<Face>> clusterFaces(List<Face> faces, float threshold) {
+        int n = faces.size();
+        List<List<Face>> groups = new ArrayList<>();
+        if (n == 0) {
+            return groups;
+        }
+        float[] cx = new float[n];
+        float[] cy = new float[n];
+        float[] cz = new float[n];
+        for (int i = 0; i < n; i++) {
+            Face face = faces.get(i);
+            float sx = 0f;
+            float sy = 0f;
+            float sz = 0f;
+            for (int k = 0; k < face.count; k++) {
+                sx += face.pos[k * 3];
+                sy += face.pos[k * 3 + 1];
+                sz += face.pos[k * 3 + 2];
+            }
+            float inv = face.count == 0 ? 0f : 1f / face.count;
+            cx[i] = sx * inv;
+            cy[i] = sy * inv;
+            cz[i] = sz * inv;
+        }
+        int[] parent = new int[n];
+        for (int i = 0; i < n; i++) {
+            parent[i] = i;
+        }
+        float limit = threshold * threshold;
+        for (int i = 0; i < n; i++) {
+            for (int j = i + 1; j < n; j++) {
+                float dx = cx[i] - cx[j];
+                float dy = cy[i] - cy[j];
+                float dz = cz[i] - cz[j];
+                if (dx * dx + dy * dy + dz * dz <= limit) {
+                    union(parent, i, j);
+                }
+            }
+        }
+        Map<Integer, List<Face>> byRoot = new LinkedHashMap<>();
+        for (int i = 0; i < n; i++) {
+            byRoot.computeIfAbsent(find(parent, i), k -> new ArrayList<>()).add(faces.get(i));
+        }
+        groups.addAll(byRoot.values());
+        groups.sort((a, b) -> Integer.compare(b.size(), a.size()));
+        return groups;
+    }
+
+    private static int find(int[] parent, int i) {
+        while (parent[i] != i) {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        return i;
+    }
+
+    private static void union(int[] parent, int a, int b) {
+        int ra = find(parent, a);
+        int rb = find(parent, b);
+        if (ra != rb) {
+            parent[rb] = ra;
+        }
+    }
+
+    /**
+     * One material's UV evidence, and the volume its faces occupy, measured before any repair.
+     *
+     * <p>{@code spaceGuess} is the four-way answer the {@code tex-uv:} line reports, and each word
+     * names the repair it leads to:
+     *
+     * <ul>
+     *   <li>{@code degenerate} - every corner carries the same coordinate, so the renderer wrote
+     *       positions and no UVs at all: the coordinates are rebuilt flat over the image;</li>
+     *   <li>{@code outside} - outside 0..1, i.e. scaled up by an atlas size: divided back down and
+     *       the tile lookup retried, reporting the factor;</li>
+     *   <li>{@code atlas} - inside 0..1 but a window narrower than one tile, which is a slice of an
+     *       atlas tile rather than a texture's own space: the tile under it is the image;</li>
+     *   <li>{@code local} - inside 0..1 over a real part of the picture: already the right space
+     *       for whichever image is chosen.</li>
+     * </ul>
+     *
+     * <p>{@code box} is {@code {minX, minY, minZ, maxX, maxY, maxZ}} of the material's faces. It is
+     * what tells the writer which block an unlabelled material belongs to - see
+     * {@link #dominantSprite}.
+     */
+    private record MaterialUv(int quads, float uMin, float uMax, float vMin, float vMax,
+                              boolean degenerate, float sampleU, float sampleV, float faceSpan,
+                              float[] box) {
+
+        float spanU() {
+            return this.uMax - this.uMin;
+        }
+
+        float spanV() {
+            return this.vMax - this.vMin;
+        }
+
+        String spaceGuess(String texture) {
+            if (this.degenerate) {
+                return "degenerate";
+            }
+            if (this.uMin < -1.001f || this.uMax > 1.001f
+                    || this.vMin < -1.001f || this.vMax > 1.001f) {
+                return "outside";
+            }
+            // 1/64 is four times the narrowest real tile on this pack's atlas (1/512). The test is
+            // on the widest single face, not on the material: a contraption's faces each sit in one
+            // tile while the material as a whole spans half the atlas - measured on the aeronautics
+            // propeller bearing, 344 faces whose widest is 0.00195 but whose group spans 0.65.
+            // Testing the group would call that `local` and lose it; testing the face names the
+            // real fault, which is atlas coordinates that were never converted.
+            if (isAtlasLocation(texture) && this.faceSpan < 1f / 64f) {
+                return "atlas";
+            }
+            return "local";
+        }
+
+        /**
+         * Whether the coordinates already span the picture, i.e. are in an image's own 0..1 space.
+         *
+         * <p>Measured on {@code region_20261031_100932}: the sail cloth of a contraption covers
+         * 0..1 in both axes because a canvas face of Create's sail model is declared
+         * {@code uv [0,0,16,16]}; its frame covers 3/16..13/16. Both arrived from the renderer as
+         * bare numbers, and the difference between the two is the only thing left that says which
+         * sprite each used - so this decides whether the tile lookup is allowed to run at all. For
+         * a 0..1 window it must not: the smallest tile holding its centroid is an unrelated tile,
+         * and converting through that tile is how the whole sail ended up with the frame image.</p>
+         */
+        boolean wholeSheet() {
+            if (this.degenerate) {
+                return false;
+            }
+            if (this.uMin < -0.001f || this.uMax > 1.001f
+                    || this.vMin < -0.001f || this.vMax > 1.001f) {
+                return false;
+            }
+            return this.spanU() >= 0.9f || this.spanV() >= 0.9f;
+        }
+    }
+
+    /**
+     * Give every material that names no image one, before the .obj and .mtl are built.
+     *
+     * <p>The measured fault this closes: {@code region_20261031_005556} wrote 120 materials and 10
+     * of them had no {@code map_Kd}, so Blender painted those surfaces flat white - five named
+     * after the game's missing-texture stand-in ({@code M_solid_minecraft_missingno}, plus four
+     * carrying a block id) and five after the block atlas
+     * ({@code M_*_minecraft_textures_atlas_blocks.png__*}). The atlas ones are fixed at the source
+     * (see {@link #PLACEHOLDER_SPAN}); whatever still arrives here is repaired, and a material that
+     * cannot be given an image is renamed so the name says so instead of silently rendering white.
+     *
+     * <p>Runs before the grouping loop, so the name, the image, the UVs and the .mtl cannot
+     * disagree: faces are renamed and re-addressed here, and everything downstream reads them back.
+     *
+     * @return comment lines for the .mtl, keyed by the material actually written
+     */
+    private static Map<String, String> repairUntexturedMaterials(Collector collector, Path outDir) {
+        Map<String, String> notes = new LinkedHashMap<>();
+        Map<String, List<Face>> groups = new LinkedHashMap<>();
+        for (Face face : collector.faces) {
+            groups.computeIfAbsent(face.material, k -> new ArrayList<>()).add(face);
+        }
+        if (groups.isEmpty()) {
+            return notes;
+        }
+
+        // One layer verdict per material, and one UV measurement, taken from its own faces.
+        Map<String, Layer> layerOf = new LinkedHashMap<>();
+        Map<String, MaterialUv> uvs = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Face>> entry : groups.entrySet()) {
+            Layer layer = Layer.SOLID;
+            for (Face face : entry.getValue()) {
+                layer = strongest(layer, face.layer);
+            }
+            layerOf.put(entry.getKey(), layer);
+            uvs.put(entry.getKey(), measureUv(entry.getValue()));
+        }
+
+        // Whether a texture becomes a file, asked once each. This is the same test the .mtl writer
+        // performs later, so "usable" here means "this material will have a map_Kd line".
+        Map<String, String> writable = new LinkedHashMap<>();
+
+        // The image each block's materials already agree on, most faces first - the dominant
+        // sprite of that block, which is what an unnameable material of the same block gets.
+        Map<String, Map<String, Integer>> byLabel = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Face>> entry : groups.entrySet()) {
+            String label = labelOfMaterial(entry.getKey());
+            if (label == null) {
+                continue;
+            }
+            String texture = entry.getValue().get(0).atlasPath;
+            if (!canWrite(outDir, writable, texture, layerOf.get(entry.getKey()))) {
+                continue;
+            }
+            byLabel.computeIfAbsent(label, k -> new LinkedHashMap<>())
+                .merge(texture, entry.getValue().size(), Integer::sum);
+        }
+
+        int logged = 0;
+        int repaired = 0;
+        int untextured = 0;
+        for (Map.Entry<String, List<Face>> entry : groups.entrySet()) {
+            String material = entry.getKey();
+            List<Face> faces = entry.getValue();
+            MaterialUv uv = uvs.get(material);
+            Layer layer = layerOf.get(material);
+            String texture = faces.get(0).atlasPath;
+            if (canWrite(outDir, writable, texture, layer)) {
+                // The image is real, so only a collapsed UV mapping can still be wrong: a renderer
+                // that wrote positions and no coordinates would sample one texel of a correct
+                // picture and still read as a flat colour.
+                if (uv.degenerate()) {
+                    notes.put(material, "uv-rebuilt: flat");
+                    String note = rebuildUvs(faces, uv);
+                    BlueprintExporter.LOGGER.info("tex-uv: rebuilt material={} uv={} tex={}",
+                        material, note, texture);
+                } else if (!uv.wholeSheet()) {
+                    // The image is right but the coordinates are not in its space.
+                    //
+                    // Two shapes of the same fault, both measured. Out of range: the brass cogwheel
+                    // side's 112 faces sit on u[-161..1] v[-33..1], and the brass casing's on
+                    // u[-130..1] v[-229..1] - every face one texel square, at an offset that comes
+                    // from a one-texel placeholder sprite having been used as the divisor, so each
+                    // face samples a single pixel and the whole wheel reads as one flat colour.
+                    // In range but thinner than a texel: the [tracks] belt's 84 faces arrive as
+                    // 0.0005..0.002 windows - one 16x16 tile of an 8192 atlas - spread over
+                    // u[0.383..0.882] by the renderer's own scrolling offset, which samples the
+                    // same single texel of belt.png.
+                    String note = rescaleBrokenUvs(faces, uv, material);
+                    if (note != null) {
+                        notes.put(material, "uv-rebuilt: " + note);
+                        BlueprintExporter.LOGGER.info(
+                            "tex-uv: rescaled material={} quads={} u-range={} v-range={} tex={}"
+                            + " fix={}", material, faces.size(), pair(uv.uMin(), uv.uMax()),
+                            pair(uv.vMin(), uv.vMax()), texture, note);
+                    }
+                }
+                continue;
+            }
+
+            String space = uv.spaceGuess(texture);
+            String label = labelOfMaterial(material);
+            String replacement = null;
+            String uvNote = "keep";
+            String fix = null;
+
+            // A whole-sheet material: its coordinates already span the picture, so they are in
+            // some image's own space and no tile can hold them. A centroid lookup over them can
+            // only name an unrelated tile, which is why the image comes from the block models of
+            // the part instead - one image per UV window, matched face by face.
+            if (uv.wholeSheet() && label != null && ENTITY_BY_LABEL.containsKey(label)) {
+                Map<String, Integer> images = new LinkedHashMap<>();
+                Map<String, Integer> repairedFaces = repairByModelSprite(
+                    faces, label, outDir, writable, layer, images);
+                if (repairedFaces != null) {
+                    int matched = 0;
+                    for (int count : repairedFaces.values()) {
+                        matched += count;
+                    }
+                    // Whatever window the models did not declare takes the image most of this
+                    // material's own faces agreed on, so no face of it is left nameless.
+                    String fallback = null;
+                    int bestCount = -1;
+                    for (Map.Entry<String, Integer> image : repairedFaces.entrySet()) {
+                        if (image.getValue() > bestCount) {
+                            fallback = image.getKey();
+                            bestCount = image.getValue();
+                        }
+                    }
+                    int rebuilt = 0;
+                    for (Face face : faces) {
+                        if (face.material.equals(material)) {
+                            // A window with an axis collapsed to nothing is not a window: measured
+                            // on this contraption's 228 sail faces, 42 distinct windows and 220 of
+                            // the faces have u or v equal at every corner - (1,1,0,0), (1,1,0,1),
+                            // (0.875,1,0,0). Written as they are, each of those faces samples one
+                            // texel of whatever image is chosen. The image is the cloth, and the
+                            // cloth is a repeating weave, so the whole image over such a face is
+                            // both what the renderer was drawing and the only answer the numbers
+                            // still support.
+                            if (collapsed(face)) {
+                                wholeImage(face);
+                                rebuilt++;
+                            }
+                            face.atlasPath = fallback;
+                            face.material = materialNameFor(fallback, layer) + "__" + label;
+                        }
+                    }
+                    for (Map.Entry<String, Integer> image : repairedFaces.entrySet()) {
+                        String filed = materialNameFor(image.getKey(), layer) + "__" + label;
+                        notes.put(filed,
+                                  "uv: keep, image: " + image.getKey()
+                                  + " (the block model of " + label + ", by UV window)");
+                        // The block's own model declared this sprite for that window, which is
+                        // real evidence rather than a vote.
+                        noteSpriteSrc(filed, "model");
+                    }
+                    repaired++;
+                    fix = "sheet-by-model faces=" + matched + " rebuilt=" + rebuilt
+                        + " -> " + summarise(repairedFaces);
+                    if (logged < TEX_UV_LINES) {
+                        logged++;
+                        BlueprintExporter.LOGGER.info(
+                            "tex-uv: material={} quads={} u-range={} v-range={} sample={}"
+                            + " space-guess=sheet fix={}",
+                            material, faces.size(), pair(uv.uMin(), uv.uMax()),
+                            pair(uv.vMin(), uv.vMax()), point(uv.sampleU(), uv.sampleV()), fix);
+                    }
+                    continue;
+                }
+            }
+
+            // An entity whose own renderer names a real PNG, while its render type names only the
+            // atlas. The PNG is the picture; the tile under the centroid is whatever block sprite
+            // happens to sit there. Measured: simulated:contraption_diagram, three faces on a
+            // 0.004x0.002 window, resolved to `0extra_building_material/preview/bin_.png` instead
+            // of `simulated:textures/entity/diagram_small.png`.
+            String rendererPng = label == null ? null : ENTITY_RENDERER_TEXTURE.get(label);
+            if (rendererPng != null && uv.faceSpan() < 1f / 64f
+                    && canWrite(outDir, writable, rendererPng, layer)) {
+                replacement = rendererPng;
+                ENTITY_TEXTURES.add(rendererPng);
+                uvNote = rebuildUvs(faces, uv);
+                fix = "entity-renderer-texture " + rendererPng;
+            }
+
+            if (replacement == null && "outside".equals(space)) {
+                Rebased rebased = rebaseOutside(faces, uv, outDir, writable, layer);
+                if (rebased != null) {
+                    replacement = rebased.texture();
+                    uvNote = "rescaled by=" + number(rebased.divisor());
+                    fix = "rescaled by=" + number(rebased.divisor());
+                }
+            }
+            int split = 0;
+            if (replacement == null && "atlas".equals(space)) {
+                // The coordinates are atlas coordinates that were never converted: each face sits
+                // in one tile, but the material as a whole spans several. Refile every face by the
+                // tile its own centroid falls in - the per-quad answer the pipeline could not reach
+                // because the renderer named no sprite. Only applied when every face of the
+                // material can be filed, so a partial answer never leaves a mixture behind.
+                split = splitByTile(faces, outDir, writable, layer, label);
+                if (split > 0) {
+                    // One material repaired, however many faces it was split into.
+                    repaired++;
+                    fix = "split-by-tile faces=" + split;
+                }
+            }
+            if (replacement == null && split == 0) {
+                replacement = dominantSprite(material, groups, uvs, byLabel, outDir, writable,
+                                            layerOf);
+                if (replacement != null) {
+                    uvNote = rebuildUvs(faces, uv);
+                }
+            }
+
+            if (replacement == null && split == 0) {
+                // Nothing could be named. The material keeps a name that says so - visible in
+                // Blender's own material list - and is warned about by name, because a white
+                // surface nobody is told about is how this whole family of faults survived.
+                String renamed = materialNameFor(null, layer);
+                if (label != null) {
+                    renamed = renamed + "__" + label;
+                }
+                for (Face face : faces) {
+                    face.material = renamed;
+                    face.atlasPath = null;
+                }
+                untextured++;
+                fix = "untextured";
+                noteSpriteSrc(renamed, "none");
+                BlueprintExporter.LOGGER.warn(
+                    "tex-missing: WARN untextured material={} block={} quads={} space-guess={}",
+                    renamed, label == null ? "-" : label, faces.size(), space);
+            } else if (replacement != null) {
+                String renamed = materialNameFor(replacement, layer);
+                if (label != null) {
+                    renamed = renamed + "__" + label;
+                }
+                for (Face face : faces) {
+                    face.material = renamed;
+                    face.atlasPath = replacement;
+                }
+                notes.put(renamed, "uv: " + uvNote + ", image: dominant sprite of "
+                    + (label == null ? "the overlapping block" : label));
+                // Which route produced it: a block model's own window is "model", a majority vote
+                // over the block is "dominant", and a tile borrowed from an atlas position is
+                // "neighbour" - the last one being the guess that keeps going wrong on wheels.
+                noteSpriteSrc(renamed, "sheet-by-model".equals(uvNote) ? "model"
+                    : (split > 0 || "atlas".equals(space) ? "neighbour" : "dominant"));
+                repaired++;
+                fix = uvNote + " -> " + renamed;
+            }
+
+            if (logged < TEX_UV_LINES) {
+                logged++;
+                // One line per material that had no image, with the space its UVs were in and what
+                // was done about it: the four numbers that told this fault apart from five earlier
+                // ones, and the one word that says whether they were atlas pixels, a local window,
+                // or a point.
+                BlueprintExporter.LOGGER.info(
+                    "tex-uv: material={} quads={} u-range={} v-range={} sample={} space-guess={}"
+                    + (fix == null ? "" : " fix=" + fix),
+                    material, faces.size(), pair(uv.uMin(), uv.uMax()),
+                    pair(uv.vMin(), uv.vMax()), point(uv.sampleU(), uv.sampleV()), space);
+            }
+        }
+        BlueprintExporter.LOGGER.info(
+            "tex-uv: repair materials={} repaired={} untextured={}", groups.size(), repaired,
+            untextured);
+        return notes;
+    }
+
+    /** Whether a texture becomes a PNG in this export, cached per texture. */
+    private static boolean canWrite(Path outDir, Map<String, String> cache, String texture,
+                                    Layer layer) {
+        if (texture == null || texture.isEmpty()) {
+            return false;
+        }
+        if (isAtlasLocation(texture) || isMissingSpriteName(texture)) {
+            // Neither is a file: the atlas is stitched in memory, and the missing-texture
+            // stand-in has no PNG anywhere in a pack.
+            return false;
+        }
+        if (cache.containsKey(texture)) {
+            return cache.get(texture) != null;
+        }
+        String written = writeSpritePng(outDir, texture, layer);
+        cache.put(texture, written);
+        return written != null;
+    }
+
+    /** The block a material was filed under, from its own `__<label>` suffix, or null. */
+    private static String labelOfMaterial(String material) {
+        if (material == null) {
+            return null;
+        }
+        int at = material.lastIndexOf("__");
+        if (at < 0 || at + 2 >= material.length()) {
+            return null;
+        }
+        String label = material.substring(at + 2);
+        return label.isEmpty() ? null : label;
+    }
+
+    /** A material's UV bounds and volume, and whether every corner carries the same coordinate. */
+    private static MaterialUv measureUv(List<Face> faces) {        float uMin = Float.MAX_VALUE;
+        float uMax = -Float.MAX_VALUE;
+        float vMin = Float.MAX_VALUE;
+        float vMax = -Float.MAX_VALUE;
+        float[] box = {Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE,
+                       -Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE};
+        float firstU = 0f;
+        float firstV = 0f;
+        boolean first = true;
+        boolean degenerate = true;
+        float faceSpan = 0f;
+        int quads = 0;
+        for (Face face : faces) {
+            quads++;
+            float faceUMin = Float.MAX_VALUE;
+            float faceUMax = -Float.MAX_VALUE;
+            float faceVMin = Float.MAX_VALUE;
+            float faceVMax = -Float.MAX_VALUE;
+            for (int i = 0; i < face.count; i++) {
+                float u = face.uv[i * 2];
+                float v = face.uv[i * 2 + 1];
+                if (first) {
+                    firstU = u;
+                    firstV = v;
+                    first = false;
+                } else if (Math.abs(u - firstU) > 1e-6f || Math.abs(v - firstV) > 1e-6f) {
+                    degenerate = false;
+                }
+                faceUMin = Math.min(faceUMin, u);
+                faceUMax = Math.max(faceUMax, u);
+                faceVMin = Math.min(faceVMin, v);
+                faceVMax = Math.max(faceVMax, v);
+                uMin = Math.min(uMin, u);
+                uMax = Math.max(uMax, u);
+                vMin = Math.min(vMin, v);
+                vMax = Math.max(vMax, v);
+            }
+            faceSpan = Math.max(faceSpan,
+                                Math.max(faceUMax - faceUMin, faceVMax - faceVMin));
+            for (int i = 0; i < face.count; i++) {
+                for (int axis = 0; axis < 3; axis++) {
+                    float p = face.pos[i * 3 + axis];
+                    box[axis] = Math.min(box[axis], p);
+                    box[3 + axis] = Math.max(box[3 + axis], p);
+                }
+            }
+        }
+        if (first) {
+            return new MaterialUv(0, 0f, 0f, 0f, 0f, true, 0f, 0f, 0f, box);
+        }
+        return new MaterialUv(quads, uMin, uMax, vMin, vMax, degenerate, firstU, firstV,
+                              faceSpan, box);
+    }
+
+    /**
+     * Re-address a material's UVs for the image that replaced its own.
+     *
+     * <p>Three cases, and the difference matters: a window that already spans the picture is left
+     * alone; a window that covers a real part of a texture's own space but not all of it is scaled
+     * onto 0..1, so the replacement is visible over the whole face instead of in one corner; and a
+     * window collapsed to a point is rebuilt as the four corners of the image in the order the
+     * model listed them.
+     *
+     * @return {@code flat}, {@code window} or {@code keep}, recorded as the .mtl comment
+     */
+    private static String rebuildUvs(List<Face> faces, MaterialUv uv) {
+        if (uv.degenerate()) {
+            for (Face face : faces) {
+                for (int i = 0; i < face.count; i++) {
+                    // A triangle takes three corners of the picture and a quad all four.
+                    float u = i == 1 || (i == 2 && face.count == 4) ? 1f : 0f;
+                    float v = i == 2 || i == 3 ? 1f : 0f;
+                    face.uv[i * 2] = u;
+                    face.uv[i * 2 + 1] = v;
+                }
+            }
+            return "flat";
+        }
+        if (uv.spanU() >= 0.9f && uv.spanV() >= 0.9f) {
+            return "keep";
+        }
+        for (Face face : faces) {
+            for (int i = 0; i < face.count; i++) {
+                face.uv[i * 2] = uv.spanU() <= 1e-6f ? 0.5f
+                    : clamp01((face.uv[i * 2] - uv.uMin()) / uv.spanU());
+                face.uv[i * 2 + 1] = uv.spanV() <= 1e-6f ? 0.5f
+                    : clamp01((face.uv[i * 2 + 1] - uv.vMin()) / uv.spanV());
+            }
+        }
+        return "window";
+    }
+
+    /** One material's UVs after they were divided back into atlas range. */
+    private record Rebased(String texture, float divisor) {
+    }
+
+    /**
+     * Divide UVs that were scaled out of range back into the atlas and retry the tile lookup.
+     *
+     * <p>{@code outside} means a renderer multiplied its coordinates by an atlas dimension - the
+     * same mistake the atlas-pixel path used to make in the other direction. The factor is not
+     * known, so the powers of two are tried in order and each candidate has to pass the same three
+     * tests the pin path uses: a tile holds the centroid, every corner of the material sits inside
+     * that tile, and the tile can become a file.
+     *
+     * @return the tile found and the factor used, with the faces already re-addressed, or null
+     */
+    private static Rebased rebaseOutside(List<Face> faces, MaterialUv uv, Path outDir,
+                                         Map<String, String> writable, Layer layer) {
+        for (float divisor : new float[] {2f, 4f, 8f, 16f, 32f, 64f, 128f, 256f, 512f, 1024f}) {
+            float centreU = (uv.uMin() + uv.uMax()) * 0.5f / divisor;
+            float centreV = (uv.vMin() + uv.vMax()) * 0.5f / divisor;
+            if (centreU < 0f || centreU > 1f || centreV < 0f || centreV > 1f) {
+                continue;
+            }
+            TextureAtlasSprite tile = spriteContaining(centreU, centreV);
+            if (tile == null || tile.contents() == null) {
+                continue;
+            }
+            float spanU = tile.getU1() - tile.getU0();
+            float spanV = tile.getV1() - tile.getV0();
+            if (spanU < PLACEHOLDER_SPAN || spanV < PLACEHOLDER_SPAN) {
+                continue;
+            }
+            boolean insideTile = true;
+            for (Face face : faces) {
+                for (int i = 0; i < face.count && insideTile; i++) {
+                    insideTile = inside(tile, face.uv[i * 2] / divisor,
+                                        face.uv[i * 2 + 1] / divisor);
+                }
+            }
+            if (!insideTile) {
+                continue;
+            }
+            String texture = tile.contents().name().getNamespace() + ":"
+                + tile.contents().name().getPath();
+            if (!canWrite(outDir, writable, texture, layer)) {
+                continue;
+            }
+            for (Face face : faces) {
+                for (int i = 0; i < face.count; i++) {
+                    face.uv[i * 2] = (face.uv[i * 2] / divisor - tile.getU0()) / spanU;
+                    face.uv[i * 2 + 1] = (face.uv[i * 2 + 1] / divisor - tile.getV0()) / spanV;
+                }
+            }
+            return new Rebased(texture, divisor);
+        }
+        return null;
+    }
+
+    /**
+     * Refile an atlas-space material's faces by the tile each one sits in.
+     *
+     * <p>A material whose UVs are atlas coordinates that were never converted can span several
+     * tiles even though every one of its faces sits in a single tile - measured on the CBC pitch
+     * contraption, 214 faces with a per-face span of at most 1/512 but a material span of
+     * 0.0016 x 0.0007, and on the aeronautics propeller bearing, 344 faces spanning 0.65 of the
+     * atlas. No single image is right for those groups, and their renderer named no sprite, so the
+     * tile is taken per face: the tile under the face's own centroid, with the face's coordinates
+     * moved into that tile's space. The material name carries the tile, so the faces split into one
+     * material per image and every one of them can be written.
+     *
+     * <p>Applied all or nothing: a face whose tile cannot be found or cannot be written leaves the
+     * whole material untouched, so a half-split group never appears.
+     *
+     * @return how many faces were refiled, or 0 when the material was left alone
+     */
+    private static int splitByTile(List<Face> faces, Path outDir, Map<String, String> writable,
+                                   Layer layer, String label) {
+        String[] tileOf = new String[faces.size()];
+        float[][] bounds = new float[faces.size()][];
+        for (int f = 0; f < faces.size(); f++) {
+            Face face = faces.get(f);
+            float centreU = 0f;
+            float centreV = 0f;
+            for (int i = 0; i < face.count; i++) {
+                centreU += face.uv[i * 2];
+                centreV += face.uv[i * 2 + 1];
+            }
+            centreU /= face.count;
+            centreV /= face.count;
+            if (centreU < 0f || centreU > 1f || centreV < 0f || centreV > 1f) {
+                return 0;
+            }
+            TextureAtlasSprite tile = spriteContaining(centreU, centreV);
+            if (tile == null || tile.contents() == null) {
+                return 0;
+            }
+            float spanU = tile.getU1() - tile.getU0();
+            float spanV = tile.getV1() - tile.getV0();
+            if (spanU < PLACEHOLDER_SPAN || spanV < PLACEHOLDER_SPAN) {
+                return 0;
+            }
+            String name = tile.contents().name().getNamespace() + ":"
+                + tile.contents().name().getPath();
+            if (!canWrite(outDir, writable, name, layer)) {
+                return 0;
+            }
+            tileOf[f] = name;
+            bounds[f] = new float[] {tile.getU0(), tile.getV0(), spanU, spanV};
+        }
+        for (int f = 0; f < faces.size(); f++) {
+            Face face = faces.get(f);
+            float[] tile = bounds[f];
+            for (int i = 0; i < face.count; i++) {
+                // Clamped: a face that straddles two tiles has to sample the edge of its own one
+                // rather than wrap into the neighbour's pixels.
+                face.uv[i * 2] = clamp01((face.uv[i * 2] - tile[0]) / tile[2]);
+                face.uv[i * 2 + 1] = clamp01((face.uv[i * 2 + 1] - tile[1]) / tile[3]);
+            }
+            String renamed = materialNameFor(tileOf[f], layer);
+            if (label != null) {
+                renamed = renamed + "__" + label;
+            }
+            face.material = renamed;
+            face.atlasPath = tileOf[f];
+        }
+        return faces.size();
+    }
+
+    /**
+     * One contraption's faces, re-addressed to the sprites its own block models use.
+     *
+     * <p>The measured fault this closes, from {@code region_20261031_100932}: the 228 sail faces
+     * of {@code aeronautics:propeller_bearing_contraption} arrived with the renderer's own
+     * coordinates - 0..1 for a canvas face, 3/16..13/16 for a frame face, exactly the windows the
+     * block models declare - and with no texture name at all. No atlas lookup can answer for a
+     * 0..1 window (it is inside no single tile, and the smallest tile holding its centroid is an
+     * unrelated one), so the repair pass fell back to "the majority sprite of this contraption",
+     * which was {@code create:block/sail/frame}. Every sail cloth was then textured with the
+     * frame image: 12.5% of its texels are holes, so the sail came out as a lattice instead of a
+     * cloth. That is the reported "the entity-ised sail is still not right".</p>
+     *
+     * <p>The block models are the answer, and they are still reachable: a contraption keeps its
+     * blocks in {@code Contraption#getBlocks()}, and a block's model declares both the sprites it
+     * uses and the UV window each sprite is sampled over. A window is a fingerprint - the canvas
+     * covers 0..1, the sail's side strip 0..1 by 0..0.25, the frame's pieces 3/16 wide - so a face
+     * can be matched to the sprite that produced it without knowing anything about the atlas.</p>
+     *
+     * <p>Guarded end to end: no contraption, an unreadable block map, a model that will not bake,
+     * or a face whose window matches nothing all leave the material exactly as it was.</p>
+     */
+    private static final class SpriteRects {
+        /** Per contraption label: window key to {sprite to how many model faces use it}. */
+        private final Map<String, Map<String, Map<String, Integer>>> cache = new LinkedHashMap<>();
+
+        private Map<String, Map<String, Integer>> of(String label) {
+            if (this.cache.containsKey(label)) {
+                Map<String, Map<String, Integer>> hit = this.cache.get(label);
+                return hit == null ? java.util.Collections.emptyMap() : hit;
+            }
+            Map<String, Map<String, Integer>> built = build(label);
+            this.cache.put(label, built);
+            return built == null ? java.util.Collections.emptyMap() : built;
+        }
+
+        private static Map<String, Map<String, Integer>> build(String label) {
+            net.minecraft.world.entity.Entity entity = ENTITY_BY_LABEL.get(label);
+            if (entity == null) {
+                return null;
+            }
+            Map<String, Map<String, Integer>> byRect = new LinkedHashMap<>();
+            for (net.minecraft.world.level.block.state.BlockState state : contraptionStates(entity)) {
+                try {
+                    var model = Minecraft.getInstance().getModelManager().getBlockModelShaper()
+                        .getBlockModel(state);
+                    if (model == null) {
+                        continue;
+                    }
+                    var random = net.minecraft.util.RandomSource.create(0L);
+                    java.util.List<net.minecraft.client.renderer.block.model.BakedQuad> quads =
+                        new ArrayList<>();
+                    for (var direction : net.minecraft.core.Direction.values()) {
+                        quads.addAll(model.getQuads(state, direction, random));
+                    }
+                    quads.addAll(model.getQuads(state, null, random));
+                    // A block every face of which covers the whole sprite - a plain cube - says
+                    // nothing about which sprite a whole-sheet face used: concrete, deepslate and
+                    // a sail's canvas all arrive as a 0..1 window. Counting those six faces would
+                    // make the commonest building block win every sail, so such a model is left
+                    // out entirely. With no informative candidate the repair pass keeps the
+                    // behaviour it had, which is the safe direction.
+                    Map<String, Map<String, Integer>> own = new LinkedHashMap<>();
+                    boolean informative = false;
+                    for (var quad : quads) {
+                        var sprite = quad.getSprite();
+                        if (sprite == null || sprite.contents() == null) {
+                            continue;
+                        }
+                        var id = sprite.contents().name();
+                        if (isMissingSpriteName(id.getPath())) {
+                            continue;
+                        }
+                        String key = rectKeyOfQuad(quad, sprite);
+                        if (key == null) {
+                            continue;
+                        }
+                        if (!"0.000,1.000,0.000,1.000".equals(key)) {
+                            informative = true;
+                        }
+                        own.computeIfAbsent(key, ignored -> new LinkedHashMap<>())
+                            .merge(id.getNamespace() + ":" + id.getPath(), 1, Integer::sum);
+                    }
+                    if (!informative) {
+                        continue;
+                    }
+                    for (Map.Entry<String, Map<String, Integer>> entry : own.entrySet()) {
+                        Map<String, Integer> into = byRect.computeIfAbsent(
+                            entry.getKey(), ignored -> new LinkedHashMap<>());
+                        for (Map.Entry<String, Integer> sprite : entry.getValue().entrySet()) {
+                            into.merge(sprite.getKey(), sprite.getValue(), Integer::sum);
+                        }
+                    }
+                } catch (Throwable ignored) {
+                    // One block whose model will not read is not the whole contraption's fault.
+                }
+            }
+            return byRect;
+        }
+    }
+
+    /** The sprites of every block a contraption is made of, by the window each is sampled over. */
+    private static final SpriteRects MODEL_SPRITE_RECTS = new SpriteRects();
+
+    /**
+     * The block states inside whatever contraption this entity is, by reflection, or empty.
+     *
+     * <p>Create's classes are not on this mod's compile path, so the walk is reflective and every
+     * failure is an empty list: {@code require=0}. The same walk already reads the block count for
+     * the {@code region-entity} line, see {@link #contraptionBlocks}.</p>
+     */
+    private static java.util.List<net.minecraft.world.level.block.state.BlockState> contraptionStates(
+            net.minecraft.world.entity.Entity entity) {
+        java.util.List<net.minecraft.world.level.block.state.BlockState> out = new ArrayList<>();
+        if (entity == null) {
+            return out;
+        }
+        try {
+            java.lang.reflect.Method getContraption = null;
+            for (Class<?> type = entity.getClass(); type != null && getContraption == null;
+                    type = type.getSuperclass()) {
+                try {
+                    getContraption = type.getMethod("getContraption");
+                } catch (NoSuchMethodException ignored) {
+                    // keep walking up: the method lives on AbstractContraptionEntity
+                }
+            }
+            if (getContraption == null) {
+                return out;
+            }
+            Object contraption = getContraption.invoke(entity);
+            if (contraption == null) {
+                return out;
+            }
+            Object blocks = contraption.getClass().getMethod("getBlocks").invoke(contraption);
+            if (!(blocks instanceof java.util.Map<?, ?> map)) {
+                return out;
+            }
+            for (Object value : map.values()) {
+                if (value == null) {
+                    continue;
+                }
+                try {
+                    Object state = value.getClass().getMethod("state").invoke(value);
+                    if (state instanceof net.minecraft.world.level.block.state.BlockState blockState) {
+                        out.add(blockState);
+                    }
+                } catch (Throwable ignored) {
+                    // A block whose state will not read is skipped, not fatal.
+                }
+            }
+        } catch (Throwable ignored) {
+            // No contraption here at all: a rope connector, a diagram, a player.
+        }
+        return out;
+    }
+
+    /** A baked quad's UV window in its own sprite's space, or null when it cannot be read. */
+    private static String rectKeyOfQuad(
+            net.minecraft.client.renderer.block.model.BakedQuad quad,
+            net.minecraft.client.renderer.texture.TextureAtlasSprite sprite) {
+        try {
+            int[] data = quad.getVertices();
+            int stride = data.length / 4;
+            if (stride < 6) {
+                return null;
+            }
+            float spanU = sprite.getU1() - sprite.getU0();
+            float spanV = sprite.getV1() - sprite.getV0();
+            if (spanU <= 0f || spanV <= 0f) {
+                return null;
+            }
+            float uMin = Float.MAX_VALUE;
+            float uMax = -Float.MAX_VALUE;
+            float vMin = Float.MAX_VALUE;
+            float vMax = -Float.MAX_VALUE;
+            for (int corner = 0; corner < 4; corner++) {
+                int base = corner * stride;
+                float u = (Float.intBitsToFloat(data[base + 4]) - sprite.getU0()) / spanU;
+                float v = (Float.intBitsToFloat(data[base + 5]) - sprite.getV0()) / spanV;
+                uMin = Math.min(uMin, u);
+                uMax = Math.max(uMax, u);
+                vMin = Math.min(vMin, v);
+                vMax = Math.max(vMax, v);
+            }
+            return rectKey(uMin, uMax, vMin, vMax);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * A UV window as a comparable key.
+     *
+     * <p>Rounded to a thousandth, which is coarser than the difference between any two windows a
+     * block model declares on a 16-texel sheet (1/16 = 0.0625) and far finer than the drift a
+     * float round trip through the model baker introduces.</p>
+     */
+    private static String rectKey(float uMin, float uMax, float vMin, float vMax) {
+        return String.format(java.util.Locale.ROOT, "%.3f,%.3f,%.3f,%.3f",
+                             uMin, uMax, vMin, vMax);
+    }
+
+    /** One face's own UV window, as the same key {@link #rectKeyOfQuad} produces. */
+    private static String rectKeyOfFace(Face face) {
+        float uMin = Float.MAX_VALUE;
+        float uMax = -Float.MAX_VALUE;
+        float vMin = Float.MAX_VALUE;
+        float vMax = -Float.MAX_VALUE;
+        for (int i = 0; i < face.count; i++) {
+            float u = face.uv[i * 2];
+            float v = face.uv[i * 2 + 1];
+            uMin = Math.min(uMin, u);
+            uMax = Math.max(uMax, u);
+            vMin = Math.min(vMin, v);
+            vMax = Math.max(vMax, v);
+        }
+        return rectKey(uMin, uMax, vMin, vMax);
+    }
+
+    /**
+     * Re-address one material's faces to the sprites their own block models used.
+     *
+     * <p>Each face is matched by its UV window, which is what makes a sail cloth a canvas and its
+     * frame a frame even though both arrived as bare coordinates from the same renderer. A face
+     * whose window matches nothing keeps the material it had, and a material for which no face
+     * matches anything is left entirely alone - this pass can only ever add an image, never take
+     * one away.</p>
+     *
+     * @return the images the faces were filed under, or null when nothing matched
+     */
+    private static Map<String, Integer> repairByModelSprite(
+            List<Face> faces, String label, Path outDir, Map<String, String> writable, Layer layer,
+            Map<String, Integer> images) {
+        Map<String, Map<String, Integer>> byRect = MODEL_SPRITE_RECTS.of(label);
+        if (byRect.isEmpty()) {
+            return null;
+        }
+        int matched = 0;
+        for (Face face : faces) {
+            Map<String, Integer> candidates = byRect.get(rectKeyOfFace(face));
+            if (candidates == null) {
+                continue;
+            }
+            String best = null;
+            int bestCount = -1;
+            for (Map.Entry<String, Integer> candidate : candidates.entrySet()) {
+                String sprite = candidate.getKey();
+                // The image's own layer, never `layerFor`: that one folds in the render-type hint
+                // of whatever was drawn last, which at this point is a stale thread-local from the
+                // model pass and would make every canvas look like a cutout.
+                Layer spriteLayer = textureLayerOf(sprite);
+                if (spriteLayer != layer) {
+                    // A frame sprite must never texture a cloth: the layers are how the renderer
+                    // itself separated them, and they are the one thing about this geometry that
+                    // did survive the render pass.
+                    continue;
+                }
+                if (layer == Layer.SOLID) {
+                    Alpha alpha = textureAlpha(sprite);
+                    if (alpha.holes() > 0.02f) {
+                        // A solid sheet cannot be drawn with an image that has holes in it.
+                        continue;
+                    }
+                }
+                if (!canWrite(outDir, writable, sprite, spriteLayer)) {
+                    continue;
+                }
+                if (candidate.getValue() > bestCount) {
+                    best = sprite;
+                    bestCount = candidate.getValue();
+                }
+            }
+            if (best == null) {
+                continue;
+            }
+            face.atlasPath = best;
+            face.material = materialNameFor(best, layer) + "__" + label;
+            images.merge(best, 1, Integer::sum);
+            matched++;
+        }
+        return matched == 0 ? null : images;
+    }
+
+    /** How many faces of a material had their coordinates rebuilt, keyed by image. */
+    private static String summarise(Map<String, Integer> facesPerImage) {
+        StringBuilder out = new StringBuilder();
+        for (Map.Entry<String, Integer> entry : facesPerImage.entrySet()) {
+            if (out.length() > 0) {
+                out.append(',');
+            }
+            out.append(entry.getKey()).append('x').append(entry.getValue());
+        }
+        return out.toString();
+    }
+
+    /**
+     * Re-address every face thinner than a texel, per face, by an affine remap of its own window.
+     *
+     * <p>A 16x16 sprite is 1/512 of this pack's 8192 atlas, so a window of 0.0005..0.002 is one
+     * tile or less: with the image written as its own PNG, such a face samples a single texel of
+     * it and reads as one flat colour however correct the material is. That is the measured
+     * [tracks] belt - 3532 link quads, windows of exactly one tile, spread over half the atlas by
+     * the renderer's scrolling offset.</p>
+     *
+     * <p>The mapping is an <b>affine remap of the quad's own window</b>, corner by corner:
+     * {@code u' = (u - uMin) / (uMax - uMin)} and the same for v. That is what a whole-image
+     * rebuild got wrong - writing the four corners as {@code (0,0)(1,0)(1,1)(0,1)} in vertex order
+     * throws away which way round the window ran, so a tread tile that was drawn across the link
+     * came out rotated or mirrored: the reported "the track plate's direction is wrong, inner and
+     * outer are right". A monotone map of the quad's own min/max keeps the direction, the mirror
+     * and the rotation, because it never reorders the corners - it only scales their coordinates.
+     * An axis whose window has collapsed to a single value carries no direction to keep, so that
+     * axis alone falls back to the fixed corner order and is counted as {@code collapsed}.</p>
+     *
+     * <p>Per face, not per material: a material can mix a scrolling window with a strip drawn in
+     * its own 0..1 space, and a face that already has a real window is left untouched.</p>
+     *
+     * @return {@code {quads, collapsed-u, collapsed-v}}
+     */
+    private static int[] remapThinFaces(List<Face> faces) {
+        int[] tally = new int[3];
+        for (Face face : faces) {
+            if (faceSpanOf(face) >= 1f / 64f) {
+                continue;
+            }
+            tally[0]++;
+            affineRemap(face, tally);
+        }
+        return tally;
+    }
+
+    /** Every face of a material, each through its own window's affine remap. */
+    private static int[] remapAllFaces(List<Face> faces) {
+        int[] tally = new int[3];
+        for (Face face : faces) {
+            tally[0]++;
+            affineRemap(face, tally);
+        }
+        return tally;
+    }
+
+    /**
+     * Map one face's own UV window onto 0..1 without reordering a single corner.
+     *
+     * <p>{@code tally[1]} and {@code tally[2]} count the faces where an axis had no window at all
+     * (every corner equal), which is the only case where a fixed corner order is used.</p>
+     */
+    private static void affineRemap(Face face, int[] tally) {
+        float uMin = Float.MAX_VALUE;
+        float uMax = -Float.MAX_VALUE;
+        float vMin = Float.MAX_VALUE;
+        float vMax = -Float.MAX_VALUE;
+        for (int i = 0; i < face.count; i++) {
+            float u = face.uv[i * 2];
+            float v = face.uv[i * 2 + 1];
+            uMin = Math.min(uMin, u);
+            uMax = Math.max(uMax, u);
+            vMin = Math.min(vMin, v);
+            vMax = Math.max(vMax, v);
+        }
+        float spanU = uMax - uMin;
+        float spanV = vMax - vMin;
+        boolean flatU = spanU < 1e-6f;
+        boolean flatV = spanV < 1e-6f;
+        if (flatU) {
+            tally[1]++;
+        }
+        if (flatV) {
+            tally[2]++;
+        }
+        for (int i = 0; i < face.count; i++) {
+            // A collapsed axis has no order to preserve, so it takes the same corner order
+            // `wholeImage` used - and only it does.
+            float u = flatU ? fixedCornerU(i, face.count)
+                : (face.uv[i * 2] - uMin) / spanU;
+            float v = flatV ? fixedCornerV(i, face.count)
+                : (face.uv[i * 2 + 1] - vMin) / spanV;
+            face.uv[i * 2] = u;
+            face.uv[i * 2 + 1] = v;
+        }
+    }
+
+    /** The corner order `wholeImage` writes, kept for the collapsed-axis case alone. */
+    private static float fixedCornerU(int index, int count) {
+        return index == 1 || (index == 2 && count == 4) ? 1f : 0f;
+    }
+
+    /** The corner order `wholeImage` writes, kept for the collapsed-axis case alone. */
+    private static float fixedCornerV(int index, int count) {
+        return index == 2 || index == 3 ? 1f : 0f;
+    }
+
+    /** The one line the acceptance reads for a rebuilt UV mapping. */
+    private static void logUvRemap(String material, int[] tally, String mode) {
+        try {
+            BlueprintExporter.LOGGER.info(
+                "uv-remap: material={} quads={} mode={} collapsed-u={} collapsed-v={}",
+                material, tally[0], mode, tally[1], tally[2]);
+        } catch (Throwable ignored) {
+            // a diagnostic that fails is not worth a crash
+        }
+    }
+
+    /** One face's wider UV span. */
+    private static float faceSpanOf(Face face) {
+        float uMin = Float.MAX_VALUE;
+        float uMax = -Float.MAX_VALUE;
+        float vMin = Float.MAX_VALUE;
+        float vMax = -Float.MAX_VALUE;
+        for (int i = 0; i < face.count; i++) {
+            float u = face.uv[i * 2];
+            float v = face.uv[i * 2 + 1];
+            uMin = Math.min(uMin, u);
+            uMax = Math.max(uMax, u);
+            vMin = Math.min(vMin, v);
+            vMax = Math.max(vMax, v);
+        }
+        return Math.max(uMax - uMin, vMax - vMin);
+    }
+
+    /** Whether one axis of a face's UV window has collapsed to nothing. */
+    private static boolean collapsed(Face face) {
+        float uMin = Float.MAX_VALUE;
+        float uMax = -Float.MAX_VALUE;
+        float vMin = Float.MAX_VALUE;
+        float vMax = -Float.MAX_VALUE;
+        for (int i = 0; i < face.count; i++) {
+            float u = face.uv[i * 2];
+            float v = face.uv[i * 2 + 1];
+            uMin = Math.min(uMin, u);
+            uMax = Math.max(uMax, u);
+            vMin = Math.min(vMin, v);
+            vMax = Math.max(vMax, v);
+        }
+        return uMax - uMin < 1e-4f || vMax - vMin < 1e-4f;
+    }
+
+    /** The four corners of the image, in the corner order the model listed them. */
+    private static void wholeImage(Face face) {
+        for (int i = 0; i < face.count; i++) {
+            // Same corner order the `flat` rebuild uses, so a rebuild of a rebuild is stable.
+            float u = i == 1 || (i == 2 && face.count == 4) ? 1f : 0f;
+            float v = i == 2 || i == 3 ? 1f : 0f;
+            face.uv[i * 2] = u;
+            face.uv[i * 2 + 1] = v;
+        }
+    }
+
+    /**
+     * Bring a material's coordinates back into its own image's 0..1, however they were broken.
+     *
+     * <p>Two families, told apart by how far out they are, because they need opposite repairs:</p>
+     *
+     * <ul>
+     *   <li><b>a little out</b> - u[0..1.25] on Create's creative motor, u[0..1.27] on the synaxis
+     *       resistor. These are a texture sheet slightly larger than the sprite it was measured
+     *       against, so the whole material's range onto 0..1 is the exact inverse and every face
+     *       keeps its own window inside that range;</li>
+     *   <li><b>far out</b> - u[-161..1] on the brass cogwheel side, u[-130..1] v[-229..1] on the
+     *       brass casing, where each face is a one-unit square at a large arbitrary offset. No
+     *       single scale can undo that, and the offsets are not recoverable: each face is remapped
+     *       through its own window - {@code (u - uMin) / (uMax - uMin)} corner by corner - which
+     *       is a one-unit square onto 0..1 with its direction intact, so the picture covers the
+     *       face exactly as a block model's sprite covers its own.</li>
+     * </ul>
+     *
+     * <p>A third family is <b>in range and thinner than a texel</b> - the [tracks] belt's 40 and 56
+     * quad materials arrive as u[0.3831..0.3933] v[0.6426..0.6445], i.e. one 16x16 tile of an 8192
+     * atlas per face, spread by the renderer's own scrolling offset. Those are the same per-face
+     * affine remap, but the answer they produce is different in kind: after it, every face spans
+     * the tile it came from, so its coordinates are <b>tile-relative</b>, not a copy of the whole
+     * picture. That distinction is what the .mtl note and the {@code uv-remap:} line now name
+     * ({@code tile-relative} rather than {@code affine}), so "per-face span 1.000" can no longer be
+     * read as "the whole image was stamped on every face".</p>
+     *
+     * <p>Only ever called for a material whose image already exists and whose coordinates are
+     * demonstrably not in it: inside 0..1 and spanning the picture, or inside 0..1 but thinner than
+     * a texel, or out of range altogether. Anything else is left exactly as it was.</p>
+     *
+     * @return how the coordinates were rebuilt, or null when they were left alone
+     */
+    private static String rescaleBrokenUvs(List<Face> faces, MaterialUv uv, String material) {
+        boolean outside = uv.uMin() < -1.001f || uv.uMax() > 1.001f
+            || uv.vMin() < -1.001f || uv.vMax() > 1.001f;
+        if (outside) {
+            if (uv.spanU() <= 2f && uv.spanV() <= 2f) {
+                float spanU = uv.spanU();
+                float spanV = uv.spanV();
+                for (Face face : faces) {
+                    for (int i = 0; i < face.count; i++) {
+                        face.uv[i * 2] = spanU <= 1e-6f ? 0.5f
+                            : clamp01((face.uv[i * 2] - uv.uMin()) / spanU);
+                        face.uv[i * 2 + 1] = spanV <= 1e-6f ? 0.5f
+                            : clamp01((face.uv[i * 2 + 1] - uv.vMin()) / spanV);
+                    }
+                }
+                // A whole-material range is monotone, so it keeps every face's direction too; it
+                // is reported under the same line so the log answers "how was this rebuilt" for
+                // every rebuilt material, not only for the per-face case.
+                logUvRemap(material, new int[] {faces.size(), 0, 0}, "range");
+                return "by range " + number(uv.spanU()) + "x" + number(uv.spanV());
+            }
+            int[] tallied = remapAllFaces(faces);
+            logUvRemap(material, tallied, "affine");
+            return "affine per face (" + tallied[0] + ")";
+        }
+        // Every face narrower than a texel: the window is one atlas tile (or a slice of one), so the
+        // affine remap of the face's own min/max lands its coordinates inside that tile's own 0..1.
+        // That is a *tile-relative* normalisation, not a whole-image rebuild: the earlier wording
+        // said `affine per face (40)` beside a per-face span of exactly 1.000, which reads - in the
+        // .mtl, with no other evidence - exactly like "the whole picture was stamped on every face".
+        // The window width is reported with the count so the two cannot be confused again.
+        float window = 0f;
+        for (Face face : faces) {
+            window = Math.max(window, faceSpanOf(face));
+        }
+        int[] thin = remapThinFaces(faces);
+        if (thin[0] == 0) {
+            return null;
+        }
+        logUvRemap(material, thin, "tile-relative");
+        return "tile-relative per face (" + thin[0] + " of " + faces.size()
+            + " at window " + number(window) + ")";
+    }
+
+    /**
+     *
+     * <p>Two routes, in the order the evidence is trustworthy. A material that carries its block id
+     * - everything a block-entity renderer drew - takes the image the rest of that block already
+     * uses, most faces first. That is the block's dominant sprite, and on a Create contraption it is
+     * the only picture available, because the render type names the atlas and the coordinates name
+     * nothing.
+     *
+     * <p>A material with no block id - a model face, filed by sprite - has no block to ask. The
+     * mesh still says where it is, and a block's own faces share a volume, so the labelled material
+     * whose box overlaps it most is that block. Measured use: the CBC ammo rack's 54 model faces sit
+     * exactly inside the box of its brass casing, and this is what gives them an image.
+     *
+     * @return a texture that can be written, or null when nothing could be named
+     */
+    private static String dominantSprite(String material, Map<String, List<Face>> groups,
+                                         Map<String, MaterialUv> uvs,
+                                         Map<String, Map<String, Integer>> byLabel, Path outDir,
+                                         Map<String, String> writable,
+                                         Map<String, Layer> layerOf) {
+        String label = labelOfMaterial(material);
+        if (label != null) {
+            Map<String, Integer> counts = byLabel.get(label);
+            if (counts == null) {
+                return null;
+            }
+            String best = null;
+            int bestCount = -1;
+            for (Map.Entry<String, Integer> candidate : counts.entrySet()) {
+                if (candidate.getValue() > bestCount) {
+                    best = candidate.getKey();
+                    bestCount = candidate.getValue();
+                }
+            }
+            return best;
+        }
+        MaterialUv own = uvs.get(material);
+        if (own == null) {
+            return null;
+        }
+        // Which of the labelled materials lies inside this one's volume. A block's materials are
+        // grouped by texture across the whole sub-level, so a box is the block's extent and not a
+        // part's - asking "which box overlaps mine most" would always answer with the biggest box
+        // in the structure. Asking "which box is contained in mine" answers with the block this
+        // geometry belongs to. Measured on the CBC ammo rack's 54 missing faces: its brass casing
+        // is 98.8% inside that volume while the next candidate reaches 46.7%, hence the shares
+        // below.
+        String best = null;
+        double bestShare = 0.0;
+        int bestFaces = -1;
+        for (Map.Entry<String, List<Face>> candidate : groups.entrySet()) {
+            if (candidate.getKey().equals(material) || labelOfMaterial(candidate.getKey()) == null) {
+                continue;
+            }
+            MaterialUv other = uvs.get(candidate.getKey());
+            if (other == null) {
+                continue;
+            }
+            double candidateVolume = boxVolume(other.box());
+            if (candidateVolume <= 1e-9) {
+                continue;
+            }
+            double share = overlapVolume(own.box(), other.box()) / candidateVolume;
+            if (share < 0.5) {
+                continue;
+            }
+            String texture = candidate.getValue().get(0).atlasPath;
+            if (!canWrite(outDir, writable, texture, layerOf.get(candidate.getKey()))) {
+                continue;
+            }
+            int count = candidate.getValue().size();
+            if (count > bestFaces || (count == bestFaces && share > bestShare + 1e-9)) {
+                best = texture;
+                bestShare = share;
+                bestFaces = count;
+            }
+        }
+        return best;
+    }
+
+    /** Volume of a {@code {minX,minY,minZ,maxX,maxY,maxZ}} box, or 0 when it is a plane. */
+    private static double boxVolume(float[] box) {
+        double dx = box[3] - box[0];
+        double dy = box[4] - box[1];
+        double dz = box[5] - box[2];
+        if (dx <= 0.0 || dy <= 0.0 || dz <= 0.0) {
+            return 0.0;
+        }
+        return dx * dy * dz;
+    }
+
+    /** Volume of the intersection of two {@code {minX,minY,minZ,maxX,maxY,maxZ}} boxes. */
+    private static double overlapVolume(float[] a, float[] b) {
+        double dx = Math.min(a[3], b[3]) - Math.max(a[0], b[0]);
+        double dy = Math.min(a[4], b[4]) - Math.max(a[1], b[1]);
+        double dz = Math.min(a[5], b[5]) - Math.max(a[2], b[2]);
+        if (dx <= 0.0 || dy <= 0.0 || dz <= 0.0) {
+            return 0.0;
+        }
+        return dx * dy * dz;
+    }
+
+    private static float clamp01(float value) {
+        return value < 0f ? 0f : (value > 1f ? 1f : value);
+    }
+
+    private static String pair(float a, float b) {
+        return String.format(Locale.ROOT, "%.4f..%.4f", a, b);
+    }
+
+    /** One coordinate, two decimals: enough to read a block-sized error on a half-block wheel. */
+    private static String fmt2(float value) {
+        return String.format(Locale.ROOT, "%.2f", value);
+    }
+
+    private static String point(float u, float v) {
+        return String.format(Locale.ROOT, "(%.4f,%.4f)", u, v);
+    }
+
+    private static String number(float value) {
+        return value == Math.rint(value) ? String.valueOf((long) value)
+            : String.format(Locale.ROOT, "%.3f", value);
+    }
+
+    /**
+     * Copy one entity texture into the export folder, byte for byte.
+     *
+     * <p>The entity pass resolved this image through the render type or through
+     * {@code EntityRenderer#getTextureLocation}; either way it is a plain PNG in a pack, and it is
+     * copied exactly as shipped (see {@code CaptureExport#saveTexture}) into
+     * {@code textures/<namespace>/<path>.png}. Nothing is re-encoded: an entity texture is drawn
+     * with its own alpha and colour profile, and an ImageIO round trip would change both.</p>
+     *
+     * @return the path written, relative to the export folder, or null
+     */
+    private static String writeEntityTexturePng(Path outDir, String texture) {
+        if (texture == null || texture.isEmpty()) {
+            return null;
+        }
+        try {
+            net.minecraft.resources.ResourceLocation location =
+                net.minecraft.resources.ResourceLocation.tryParse(texture);
+            if (location == null) {
+                return null;
+            }
+            return CaptureExport.saveTexture(outDir, location);
+        } catch (Throwable t) {
+            BlueprintExporter.LOGGER.warn("entity-tex: save failed tex={} reason={}", texture,
+                t.toString());
+            return null;
+        }
+    }
+
     private static String writeSpritePng(Path outDir, String texturePath, Layer layer) {
         if (texturePath == null || texturePath.isEmpty()) {
             return null;
@@ -7032,8 +9956,14 @@ public final class BlueprintBake {
         final float[] pos;               // count * 3
         final float[] uv;                // count * 2
         final float[] norm;              // count * 3
-        final String material;
-        final String atlasPath;
+        /**
+         * The material and image this face ends up under - not final, because the writer repairs
+         * a face whose material named no image before it builds the .mtl
+         * (see {@code repairUntexturedMaterials}). Everything else about a face is decided while
+         * the geometry is written and never changes again.
+         */
+        String material;
+        String atlasPath;
         /**
          * The transparency class this face was filed under when its material was chosen.
          *
@@ -7091,6 +10021,17 @@ public final class BlueprintBake {
          */
         String uvSpace = "unknown";
 
+        /**
+         * Which transform captured this face, as a number that is unique per capture.
+         *
+         * <p>Zero means the face was written without a capture - the fallback path. Anything else
+         * is one specific {@code (frame, block offset)} pair, so counting the distinct values a
+         * material's faces carry is exactly the {@code frames-seen} number the {@code wheel-geom:}
+         * line reports: one means every face of that material came from the same piece, more than
+         * one means the material spans several pieces and each face still carries its own.</p>
+         */
+        int frameSerial;
+
         Face(int count, String material, String atlasPath, int subLevel) {
             this(count, material, atlasPath, subLevel, -1, Layer.SOLID);
         }
@@ -7110,8 +10051,15 @@ public final class BlueprintBake {
         }
     }
 
-    /** The three things a face is filed under, decided together so they cannot disagree. */
-    private record Pinned(String material, String texture, Layer layer) {
+    /**
+     * The three things a face is filed under, decided together so they cannot disagree.
+     *
+     * <p>{@code src} is where the image came from - {@code model}, {@code atlas},
+     * {@code render-type}, {@code dominant} or {@code neighbour} - and exists so the
+     * {@code wheel-tex:} line can say which of the routes produced a wheel's texture instead of
+     * only naming the result. That question is the whole of "the idler's texture is wrong".</p>
+     */
+    private record Pinned(String material, String texture, Layer layer, String src) {
     }
 
     /**
@@ -7124,6 +10072,40 @@ public final class BlueprintBake {
         private final List<float[]> quad = new ArrayList<>(4);
         private final List<float[]> uvQuad = new ArrayList<>(4);
         private final List<float[]> nQuad = new ArrayList<>(4);
+
+        /**
+         * The same corners as {@link #quad}, but in the renderer's own coordinates.
+         *
+         * <p>Kept so the frame and the block offset can be applied <b>once per face, at flush</b>,
+         * from the transform captured when that face's first corner arrived. Applying it corner by
+         * corner as each one arrives is what put a face's fourth corner inside the next piece: a
+         * renderer that writes wheels or links one after another changes the transform between
+         * them, so a face left half-written was finished by a corner placed under the next
+         * transform - three corners in one wheel, the fourth a block away. Measured on
+         * {@code region_20261031_111610}, the offroad wheel-mount material had eight quads of
+         * exactly that shape and they are the "twisted into a fan of triangles" report. The same
+         * measurement on the track belt and the CBC barrel found none, which is why only the
+         * wheels were reported.</p>
+         */
+        private final List<float[]> rawQuad = new ArrayList<>(4);
+
+        /**
+         * The transform captured when the open face's first corner arrived, or null.
+         *
+         * <p>Null means no face is open, and {@code flush} then falls back to the current state
+         * - the old behaviour, kept for any route that never captures one. Two captures can never
+         * compare equal: {@link #quadFrameSerial} hands out a fresh number for each, which is what
+         * the {@code wheel-geom:} line counts as {@code frames-seen}.</p>
+         */
+        private org.joml.Matrix4f quadFrame;
+        private float quadFrameOffsetX;
+        private float quadFrameOffsetY;
+        private float quadFrameOffsetZ;
+        /** Identifies the captured transform, so a material's distinct transforms can be counted. */
+        private int quadFrameSerial;
+        /** Hands out {@link #quadFrameSerial}. */
+        private int frameSerialCounter;
+
         private Matrix4f lastPose = new Matrix4f();
         private Matrix3f lastNormal = new Matrix3f();
         /** The block's position in its sub-level, in sub-level axes. */
@@ -7134,6 +10116,8 @@ public final class BlueprintBake {
         private int currentSubLevel;
 
         void setSubLevel(int subLevel) {
+            // A face that is only part written belongs to the sub-level it was started in.
+            closePartialFace();
             this.currentSubLevel = subLevel;
         }
 
@@ -7186,6 +10170,7 @@ public final class BlueprintBake {
         private Matrix4f vertexFrame = new Matrix4f();
 
         void setVertexFrame(Matrix4f frame) {
+            closePartialFace();
             this.vertexFrame = frame == null ? new Matrix4f() : new Matrix4f(frame);
         }
 
@@ -7204,14 +10189,28 @@ public final class BlueprintBake {
          * </ul>
          */
         private org.joml.Vector3f place(float x, float y, float z, int stage) {
-            org.joml.Vector3f offset = new org.joml.Vector3f(offsetX, offsetY, offsetZ);
+            return place(x, y, z, stage, this.vertexFrame,
+                         this.offsetX, this.offsetY, this.offsetZ);
+        }
+
+        /**
+         * The same expression, against a transform that was captured instead of the current one.
+         *
+         * <p>Literal copy of the arithmetic above with the four values passed in, so a face placed
+         * from a snapshot taken under the current transform comes out bit for bit the same - which
+         * is what keeps the track belt and the cannon barrel unchanged (see {@link #flush}).</p>
+         */
+        private org.joml.Vector3f place(float x, float y, float z, int stage,
+                                        org.joml.Matrix4f frame,
+                                        float offX, float offY, float offZ) {
+            org.joml.Vector3f offset = new org.joml.Vector3f(offX, offY, offZ);
             // The offset is in sub-level axes, so the frame rotates it into the blueprint's.
-            new org.joml.Matrix3f(vertexFrame).transform(offset);
+            new org.joml.Matrix3f(frame).transform(offset);
             org.joml.Vector3f world = new org.joml.Vector3f(x, y, z);
             if (stage == 0) {
-                vertexFrame.transformPosition(world);
+                frame.transformPosition(world);
             } else if (stage == 1) {
-                world.add(vertexFrame.m30(), vertexFrame.m31(), vertexFrame.m32());
+                world.add(frame.m30(), frame.m31(), frame.m32());
             }
             world.add(offset);
             return world;
@@ -7250,6 +10249,14 @@ public final class BlueprintBake {
          */
         private String pinnedBlockLabel;
 
+        /** Which route answered the pin: {@code model} or {@code render-type}. */
+        private String pinnedSource;
+
+        /** Record which route named the pinned texture, for the per-material evidence line. */
+        void setPinnedSource(String src) {
+            this.pinnedSource = src;
+        }
+
         /**
          * The tile the quad being built resolved to, and its bounds in atlas space.
          *
@@ -7261,6 +10268,28 @@ public final class BlueprintBake {
         private String quadTile;
         /** Set when two vertices of one quad resolved to different tiles: no single image fits. */
         private boolean quadTileMixed;
+
+        /**
+         * The belt a track renderer's quad may belong to, held until the quad is complete.
+         *
+         * <p>A track renderer draws both the links and the wheels, and neither names a texture, so
+         * the belt has to be guessed. The old guess was "any coordinate inside 0..1 was already in
+         * the belt's own space" - and every atlas coordinate is inside 0..1, so the belt claimed
+         * <b>every quad</b> of every renderer whose class name contains "track". Measured on the
+         * deployed export, {@code belt-quads} equalled the quad count exactly on both blocks:
+         * 160 of 320 faces on {@code tracks:track_mount} and 65 of 130 on
+         * {@code offroad:wheel_mount} - and the wheel mount's material list then held no tyre
+         * image at all, although the game draws that tyre from {@code offroad:block/tire/tire_0}
+         * ({@code assets/offroad/models/item/*_tire/*.json}, {@code textures.tire_0}).</p>
+         *
+         * <p>So the decision waits for the whole quad: a quad whose window really is one tile of
+         * the atlas holding a tile of this pack's own namespace is that tile (a tyre, an idler
+         * wheel); anything else stays the belt. See {@link #resolveDeferredBelt}.</p>
+         */
+        private String beltDeferred;
+
+        /** Namespace of the block being drawn, so a tile of that mod's can be told from noise. */
+        private String pinnedBlockNamespace;
         /** The texture of the last face written, for the region export's diagnostic line. */
         private String lastFaceTexture;
 
@@ -7304,6 +10333,49 @@ public final class BlueprintBake {
         }
 
         /**
+         * The namespace of the block whose block entity is being drawn.
+         *
+         * <p>Only used to tell a texture of the drawing mod from an atlas coincidence: a renderer
+         * draws its own mod's images, never another mod's, so a coordinate that lands in some
+         * unrelated mod's tile was never that renderer's texture. Measured: the [tracks] belt's
+         * coordinates land in {@code create:block/axis} and
+         * {@code chipped:block/basalt/...} (the {@code DIAG tile} lines), while the wheels it
+         * draws beside them land in {@code tracks:block/tire_0}.</p>
+         */
+        void setPinnedBlockNamespace(String namespace) {
+            this.pinnedBlockNamespace = namespace;
+        }
+
+        /**
+         * Declare that the faces about to arrive belong to one entity image, and that image's
+         * coordinates are already what they should be.
+         *
+         * <p>An entity renderer that names its own PNG through {@code RenderType.entityCutout}
+         * hands over coordinates in that image's own 0..1 space - not in the block atlas's. The
+         * atlas machinery below is therefore switched off for these faces, on all three of the
+         * points where it could still act on them: {@link #toSpriteSpace} hands the numbers
+         * through, {@link #normalisePinnedUvs} leaves them alone, and {@link #effectiveMaterial}
+         * will not rename the material after a tile. Without this, 0..1 of one image was read as
+         * 0..1 of the atlas, resolved to whichever unrelated tile covers that point - measured,
+         * {@code minecraft:missingno} for a copycat cogwheel - and the face sampled a corner of
+         * the wrong picture.</p>
+         *
+         * <p>Null clears it; the entity pass clears it after every entity, so nothing here can
+         * reach a block or a block entity.</p>
+         */
+        void setEntityPin(String texture) {
+            this.entityPinTexture = texture;
+        }
+
+        /** The image the entity pass pinned for the faces being written, or null. */
+        private String entityPinTexture;
+
+        /** The material the faces are currently being filed under, for the entity texture line. */
+        String currentMaterialName() {
+            return this.currentMaterial;
+        }
+
+        /**
          * The material, texture and layer the next face is actually filed under.
          *
          * <p>A block-entity renderer's render type names the block atlas, so the name pinned when
@@ -7329,9 +10401,12 @@ public final class BlueprintBake {
             String material = this.currentMaterial;
             String texture = this.currentAtlasPath;
             Layer layer = this.currentLayer;
+            // Where the image came from, reported per material by the `wheel-tex:` line.
+            String src = this.pinnedSource == null ? "render-type" : this.pinnedSource;
             // Only a pinned group can be renamed: the model path names a face from the sprite
             // that came with its own quad, which is never a guess.
-            String tile = this.materialPinned ? resolvedTileForQuad() : null;
+            String tile = this.materialPinned && this.entityPinTexture == null
+                ? resolvedTileForQuad() : null;
             if (tile != null && !tile.equals(texture)) {
                 layer = layerFor(tile);
                 // Named by the same function the model path uses, so a track belt drawn by a
@@ -7341,8 +10416,11 @@ public final class BlueprintBake {
                     material = material + "__" + this.pinnedBlockLabel;
                 }
                 texture = tile;
+                // Resolved from the coordinates the renderer itself wrote, which is the strongest
+                // evidence available for a part whose texture is named in no model.
+                src = "atlas";
             }
-            return new Pinned(material, texture, layer);
+            return new Pinned(material, texture, layer, src);
         }
 
         /**
@@ -7444,6 +10522,18 @@ public final class BlueprintBake {
 
         /** Hand over this block's placed vertices and start a new block. */
         void drainPlacedVertices(java.util.List<float[]> into) {
+            // A face may still be open when the pass ends. Its corners are placed with the
+            // transform captured when it started - the same expression `flush` will use - and
+            // measured here without writing the face, so the placement probe sees the same
+            // vertices it saw when the offset was applied corner by corner.
+            if (this.quadFrame != null) {
+                for (float[] p : this.rawQuad) {
+                    org.joml.Vector3f q = place(p[0], p[1], p[2], 0, this.quadFrame,
+                                                this.quadFrameOffsetX, this.quadFrameOffsetY,
+                                                this.quadFrameOffsetZ);
+                    into.add(new float[] {q.x, q.y, q.z});
+                }
+            }
             into.addAll(this.placedPoints);
             this.placedPoints.clear();
         }
@@ -7549,7 +10639,8 @@ public final class BlueprintBake {
          * large modpack.
          */
         void normalisePinnedUvs() {
-            if (!this.materialPinned || this.pinnedUMin > this.pinnedUMax) {
+            if (!this.materialPinned || this.entityPinTexture != null
+                    || this.pinnedUMin > this.pinnedUMax) {
                 return;
             }
             float width = atlasWidth();
@@ -7640,8 +10731,16 @@ public final class BlueprintBake {
             if (tile == null || tile.contents() == null) {
                 return;
             }
+            if (isMissingSpriteName(tile.contents().name().getPath())) {
+                // Unreachable while spriteContaining filters it, kept because this is the one
+                // method whose output becomes a material's image.
+                return;
+            }
             float spanU = tile.getU1() - tile.getU0();
             float spanV = tile.getV1() - tile.getV0();
+            // 1/1024, not 1/256: this pack's 16x16 tiles are 1/512 of an 8192 atlas, so the old
+            // floor rejected every real tile and left the atlas name - the five `no map_Kd`
+            // materials of region_20261031_005556. See PLACEHOLDER_SPAN.
             if (spanU < PLACEHOLDER_SPAN || spanV < PLACEHOLDER_SPAN) {
                 return;
             }
@@ -7665,9 +10764,125 @@ public final class BlueprintBake {
             }
         }
 
+        /**
+         * Decide whether a track renderer's finished quad was the belt or one of its wheels.
+         *
+         * <p>A track renderer draws two different things with one render type: the links, whose
+         * coordinates are its own 0..1 space, and the tyre and idler wheels, whose coordinates are
+         * real atlas coordinates in a real tile. A single vertex cannot tell them apart - both are
+         * inside 0..1 - so the decision is made here, on the whole window, and it is the only place
+         * that has the four corners at once.</p>
+         *
+         * <p>The quad is that tile when all of these hold, and otherwise it stays the belt:</p>
+         * <ul>
+         *   <li>the tile under the window's centre is a real, non-placeholder sprite;</li>
+         *   <li>it is not the belt itself;</li>
+         *   <li>every corner of the window lies inside its rect - a window spilling out of the tile
+         *       means the coordinates were never that tile's, which is exactly why the belt's own
+         *       coordinates land in {@code create:block/axis} by coincidence and are rejected here
+         *       instead of being named after it;</li>
+         *   <li>its namespace is the belt's or the drawing block's - a renderer draws its own mod's
+         *       images, never another mod's.</li>
+         * </ul>
+         */
+        private void resolveDeferredBelt() {
+            String beltName = this.beltDeferred;
+            this.beltDeferred = null;
+            if (beltName == null) {
+                return;
+            }
+            try {
+                if (this.uvQuad.size() < 3) {
+                    return;
+                }
+                float sumU = 0f;
+                float sumV = 0f;
+                for (float[] uv : this.uvQuad) {
+                    sumU += uv[0];
+                    sumV += uv[1];
+                }
+                float centreU = sumU / this.uvQuad.size();
+                float centreV = sumV / this.uvQuad.size();
+                if (centreU < 0f || centreU > 1f || centreV < 0f || centreV > 1f) {
+                    claimBelt(beltName);
+                    return;
+                }
+                net.minecraft.client.renderer.texture.TextureAtlasSprite tile =
+                    spriteContaining(centreU, centreV);
+                if (tile == null || tile.contents() == null) {
+                    claimBelt(beltName);
+                    return;
+                }
+                var id = tile.contents().name();
+                String name = id.getNamespace() + ":" + id.getPath();
+                if (name.equals(beltName) || isMissingSpriteName(id.getPath())) {
+                    claimBelt(beltName);
+                    return;
+                }
+                if (id.getPath().toLowerCase(java.util.Locale.ROOT).contains("belt")) {
+                    // Another belt variant - the mod stitches a coloured belt and a scroll strip
+                    // for every one of them. The belt's own pin is authoritative for those, and
+                    // re-filing a link under `belt_white` would change the colour of the track.
+                    claimBelt(beltName);
+                    return;
+                }
+                float spanU = tile.getU1() - tile.getU0();
+                float spanV = tile.getV1() - tile.getV0();
+                if (spanU < PLACEHOLDER_SPAN || spanV < PLACEHOLDER_SPAN) {
+                    claimBelt(beltName);
+                    return;
+                }
+                for (float[] uv : this.uvQuad) {
+                    if (!inside(tile, uv[0], uv[1])) {
+                        claimBelt(beltName);
+                        return;
+                    }
+                }
+                if (!sameNamespace(id.getNamespace(), namespaceOf(beltName))
+                        && !sameNamespace(id.getNamespace(), this.pinnedBlockNamespace)) {
+                    // Some unrelated mod's tile: a coincidence of the numbers, not a texture this
+                    // renderer drew. The belt stands.
+                    claimBelt(beltName);
+                    return;
+                }
+                this.resolvedTilePath = name;
+                noteQuadTile(name);
+                this.quadUvLocal = false;
+                for (int i = 0; i < this.uvQuad.size(); i++) {
+                    float[] uv = this.uvQuad.get(i);
+                    this.uvQuad.set(i, new float[] {
+                        (uv[0] - tile.getU0()) / spanU,
+                        (uv[1] - tile.getV0()) / spanV,
+                    });
+                }
+            } catch (Throwable t) {
+                // A lookup that fails leaves the belt, which is what this method would have said.
+                claimBelt(beltName);
+            }
+        }
+
+        /** File the open quad under the belt, leaving its own 0..1 coordinates alone. */
+        private void claimBelt(String beltName) {
+            this.resolvedTilePath = beltName;
+            noteQuadTile(beltName);
+            this.quadUvLocal = true;
+        }
+
+        /** The namespace half of a {@code namespace:path} name, or null. */
+        private static String namespaceOf(String texturePath) {
+            if (texturePath == null) {
+                return null;
+            }
+            int colon = texturePath.indexOf(':');
+            return colon <= 0 ? null : texturePath.substring(0, colon);
+        }
+
+        private static boolean sameNamespace(String a, String b) {
+            return a != null && b != null && a.equals(b);
+        }
+
         /** The block atlas's width in pixels, or 0 when it cannot be read. */
-        private static float atlasWidth() {
-            return atlasSize(true);
+        private static float atlasWidth() {            return atlasSize(true);
         }
 
         private static float atlasHeight() {
@@ -7734,6 +10949,16 @@ public final class BlueprintBake {
          * the caller, not the consumer.
          */
         void setSprite(TextureAtlasSprite sprite) {
+            // The game's missing-texture stand-in is not a sprite anybody can copy out: there is
+            // no PNG behind it. Taking it anyway named 402 copycat-cogwheel faces
+            // `M_solid_minecraft_missingno__copycats_copycat_cogwheel` and left them white, and -
+            // worse - it replaced the real sprite a model had already handed over, so the pin
+            // that could still have named an image was thrown away. Treated as "no sprite".
+            if (sprite != null && sprite.contents() != null
+                    && isMissingSpriteName(sprite.contents().name().getPath())) {
+                this.currentSprite = null;
+                return;
+            }
             this.currentSprite = sprite;
             if (sprite != null && sprite.contents() != null) {
                 var id = sprite.contents().name();
@@ -7783,6 +11008,8 @@ public final class BlueprintBake {
          * faces for one sub-level - and stacked at the origin.
          */
         void setPoseWithOffset(Matrix4f frame, Matrix4f offset) {
+            // Close anything half written under the transform that is about to be replaced.
+            closePartialFace();
             this.vertexFrame = new Matrix4f(frame).mul(offset);
             // The offset is inside the matrix now, so the separate copy must be cleared or it
             // is added a second time.
@@ -7793,6 +11020,7 @@ public final class BlueprintBake {
 
         /** Back to the model convention, where the offset is added per vertex. */
         void setPoseWithSeparateOffset(Matrix4f frame) {
+            closePartialFace();
             this.vertexFrame = frame == null ? new Matrix4f() : new Matrix4f(frame);
         }
 
@@ -7823,8 +11051,11 @@ public final class BlueprintBake {
             quad.clear();
             uvQuad.clear();
             nQuad.clear();
+            this.rawQuad.clear();
+            dropSnapshot();
             this.quadTile = null;
             this.quadTileMixed = false;
+            this.beltDeferred = null;
         }
 
         /**
@@ -7878,7 +11109,7 @@ public final class BlueprintBake {
         public void addVertex(float x, float y, float z, int color,
                               float u, float v, int overlay, int light,
                               float nx, float ny, float nz) {
-            // The offset is rotated by the pose and then added.
+            // The offset is rotated by the frame and then added, in `place` at flush time.
             //
             // Vertices arrive here already transformed - `putBulkData` applies the pose
             // itself - but the offset does not, and it needs the same rotation or a
@@ -7888,53 +11119,73 @@ public final class BlueprintBake {
             //
             // Its own translation is included in `offsetX/Y/Z` (see setBlockOffset), so only
             // the 3x3 part is applied here.
-            org.joml.Vector3f place = place(x, y, z, 0);
-            // Record what arrived, before the frame and the block offset were applied. This is
-            // what says whether the renderer writes local or already-placed coordinates.
+            // A face that is already full is closed BEFORE this corner joins the list.
+            //
+            // The two addVertex routes used to disagree about when a face ends: the renderer route
+            // closed the previous face when the next corner arrived, this one when the face became
+            // full. A stream that used both - a wheel-mount renderer draws its baked tyres through
+            // putBulkData and its moving parts by hand - therefore ended up one corner out of
+            // phase, and every face after that point was built from three corners of one face and
+            // one of the next. That is a real, visible defect: the corner belongs to the next
+            // piece, so it carries that piece's transform and lands a block away.
+            // Both routes now close a full face first, which makes the phase impossible.
+            if (this.rawQuad.size() >= 4) {
+                flush();
+            }
+            // The transform this face will be placed with: captured from the FIRST corner, applied
+            // to all four at flush. Taken here rather than read at flush time, because a renderer
+            // that moves on to the next wheel before the face is written would otherwise have the
+            // last corner placed under the next wheel's transform.
+            snapshotFrame();
+            // Record what arrived, in the renderer's own coordinates. This is what says whether the
+            // renderer writes local or already-placed coordinates.
             noteRaw(x, y, z);
-            // ...and what it becomes afterwards, so the two can be compared.
-            notePlaced(place.x, place.y, place.z);
             // This is the route a BakedQuad takes - `emitQuad` calls straight into here - so the
             // sprite conversion must happen at this point too, not only in setUv. Applying it
             // only in setUv is why every model face kept its atlas coordinates and every
             // texture came out as one flat colour.
             float[] mapped = toSpriteSpace(u, v);
             noteUv(mapped[0], mapped[1]);
-            quad.add(new float[] {place.x, place.y, place.z});
+            rawQuad.add(new float[] {x, y, z});
             uvQuad.add(mapped);
             nQuad.add(new float[] {nx, ny, nz});
-            if (quad.size() >= 4) {
+            // Same timing as before for a stream that only uses this route: a baked quad's uv
+            // rides on its corner, so there is nothing to wait for.
+            if (this.rawQuad.size() >= 4) {
                 flush();
             }
         }
 
         /**
-         * The block's position in its sub-level, in the sub-level's own rotation.
+         * The block's position in its sub-level, in the sub-level's own axes.
          *
-         * <p>{@code R_frame . local}, with no translation. The frame's translation is already
-         * in the vertex: {@code putBulkData} transforms each vertex by the sub-level's pose,
-         * so a vertex arrives as {@code R . p + t}. Adding {@code t} again here would shift
-         * every block of the sub-level by one frame offset.
+         * <p>{@code local} is stored as given and rotated exactly once, by {@link #place}. That
+         * single rotation is the whole point: this method used to rotate it as well - {@code
+         * R_frame . local} - and {@link #place} then rotated the result again, so a block landed at
+         * {@code R.v + t + R.R.local} where it belongs at {@code R.(v + local) + t}.
          *
-         * <p>The rotation is needed because {@code local} is in sub-level axes while the
-         * vertex it is added to is already in world axes. Leaving it out - which is what the
-         * pose was silently doing, since it applies its rotation to the vertex but not to an
-         * offset added alongside - made a sub-level's blocks run along whichever axis its
-         * local grid used: an eleven block skirt spanned world x at the frame's translation,
-         * laid out the way a single block would be.
+         * <p>The error is {@code (R.R - R) . local}, which is <em>zero when the frame is the
+         * identity</em> and grows with the sub-level's yaw: the world space always looked right,
+         * which is why this survived. Measured on the two exports still on disk, the block pass of
+         * {@code region_20261030_231524} sat 17.45 / 13.41 / -5.41 blocks away from the block-entity
+         * pass of the same sub-level, while {@code region_20261030_231925} - whose frame is nearly
+         * unrotated - was 0.24 / 0.14 / 0.35 out. That is the reported "blocks in the wrong place
+         * relative to each other" and "the entity does not sit on the blocks" in one number.
+         *
+         * <p>The offset carries no translation, because the frame's own translation is already in
+         * the vertex.
          */
         void setBlockOffset(float x, float y, float z, Matrix4f frame) {
-            if (frame == null) {
-                this.offsetX = x;
-                this.offsetY = y;
-                this.offsetZ = z;
-                return;
-            }
-            org.joml.Vector3f turned = new org.joml.Vector3f(x, y, z);
-            new org.joml.Matrix3f(frame).transform(turned);
-            this.offsetX = turned.x;
-            this.offsetY = turned.y;
-            this.offsetZ = turned.z;
+            // The next piece is about to be placed somewhere else. A face that is still half
+            // written belongs to the piece that was being drawn, so it is closed here rather than
+            // being finished by the next piece's first corner - which is how a wheel's fourth
+            // corner ended up one block away from its other three.
+            closePartialFace();
+            // `frame` is kept in the signature because callers pass the frame they are drawing
+            // under and the pair is what the next reader looks for; the rotation is `place`'s.
+            this.offsetX = x;
+            this.offsetY = y;
+            this.offsetZ = z;
         }
 
         @Override
@@ -7957,13 +11208,16 @@ public final class BlueprintBake {
             //
             // Deferring the close to the next vertex costs one quad of latency and is closed by
             // resetQuad at the end of a pass, so no face is lost.
-            if (quad.size() >= 4) {
+            if (this.rawQuad.size() >= 4) {
                 flush();
             }
+            // Captured from the first corner of the face, applied to all four at flush: the
+            // transform is what a renderer changes between wheels, and reading it at flush time is
+            // what let one face straddle two of them.
+            snapshotFrame();
             // Stage 0 either way. `setPoseWithOffset` folds the block offset into the frame
             // and zeroes the separate offset, so the same expression covers a block-entity
             // renderer's raw vertex and a baked quad's.
-            org.joml.Vector3f world = place(x, y, z, 0);
             // The two probes are recorded here as well, because this is the route a
             // block-entity renderer takes when it writes through {@code SuperByteBuffer}: the
             // eleven-argument overload below is the model path and the one putBulkData reaches,
@@ -7971,8 +11225,7 @@ public final class BlueprintBake {
             // Without this the pose measurement would report "no vertex" for exactly the parts
             // whose placement is in question.
             noteRaw(x, y, z);
-            notePlaced(world.x, world.y, world.z);
-            quad.add(new float[] {world.x, world.y, world.z});
+            rawQuad.add(new float[] {x, y, z});
             uvQuad.add(new float[] {0f, 0f});
             nQuad.add(new float[] {0f, 1f, 0f});
             return this;
@@ -8238,6 +11491,15 @@ public final class BlueprintBake {
         }
 
         private float[] toSpriteSpace(float u, float v) {
+            // An entity image's own coordinates. The entity pass pins the image the renderer named
+            // (see {@link #setEntityPin}), and a renderer that draws with RenderType.entityCutout
+            // hands over 0..1 of that image - converting those would divide the picture into a
+            // corner of itself, and reading them as atlas coordinates would name whichever
+            // unrelated tile happens to cover that point. Both were happening; this is the one
+            // place that has to not do either.
+            if (this.entityPinTexture != null) {
+                return new float[] {u, v};
+            }
             // A block-entity renderer already works in the sprite's own space.
             //
             // The conversion below turns an atlas coordinate into a sprite-local one. A renderer
@@ -8264,9 +11526,13 @@ public final class BlueprintBake {
                 // `tracks:block/belt`, so the belt's faces used to be filed under the suspension
                 // mount - and, worse, the tile search below reads a 0..1 coordinate as an atlas
                 // coordinate and lands in whichever unrelated tile happens to contain it. For a
-                // renderer whose own name says "track", the belt is the answer both times:
-                // coordinates inside 0..1 are already in the belt's own space, and coordinates
-                // inside the belt's atlas rect are the belt with its scroll shift applied.
+                // renderer whose own name says "track", the belt is the answer for its own space,
+                // and the coordinates inside the belt's atlas rect are the belt with its scroll
+                // shift applied.
+                //
+                // But a track renderer also draws the wheels and the tyre, and those are real
+                // atlas coordinates in a real tile - so the belt cannot be claimed from "inside
+                // 0..1" alone. That is what took the tyre off the wheel mount: see beltDeferred.
                 boolean spriteLocal = u >= -0.001f && u <= 1.001f
                     && v >= -0.001f && v <= 1.001f;
                 if (spriteLocal) {
@@ -8277,14 +11543,11 @@ public final class BlueprintBake {
                         BeltSprite.sprite();
                     String beltName = this.trackTexture == null ? BeltSprite.texture()
                         : this.trackTexture;
-                    if (beltName != null && (spriteLocal || inside(belt, u, v))) {
+                    if (beltName != null && inside(belt, u, v)) {
+                        // The coordinates sit inside the belt sprite's own atlas rect, so they are
+                        // the belt with its scroll shift applied: convert and be done.
                         this.resolvedTilePath = beltName;
                         noteQuadTile(beltName);
-                        if (spriteLocal) {
-                            // Already the belt's own 0..1 space; converting it would divide by
-                            // the tile's span and collapse the whole link into one texel.
-                            return new float[] {u, v};
-                        }
                         float spanU = belt.getU1() - belt.getU0();
                         float spanV = belt.getV1() - belt.getV0();
                         if (spanU > 0f && spanV > 0f) {
@@ -8293,6 +11556,15 @@ public final class BlueprintBake {
                                 (v - belt.getV0()) / spanV,
                             };
                         }
+                        return new float[] {u, v};
+                    }
+                    if (beltName != null && spriteLocal) {
+                        // Inside 0..1, which is both "the belt's own space" and "any atlas
+                        // coordinate", so this vertex cannot decide. Held for the quad: if the
+                        // finished window turns out to be one tile of this pack's own namespace,
+                        // it is that tile (the tyre and the idler wheels a track renderer draws
+                        // beside its links); otherwise it is the belt, untouched.
+                        this.beltDeferred = beltName;
                         return new float[] {u, v};
                     }
                 }
@@ -8326,6 +11598,15 @@ public final class BlueprintBake {
                 net.minecraft.client.renderer.texture.TextureAtlasSprite tile =
                     spriteContaining(u, v);
                 if (tile == null) {
+                    return new float[] {u, v};
+                }
+                // A tile that cannot become an image is not a tile. `missingno` is 16x16 and
+                // passes every size test; leaving the coordinate untouched lets the pin (or,
+                // later, the repair pass in the writer) decide the image instead of a
+                // coincidence. Only the name is tested here: a candidate comes from the real
+                // atlas, where a pack may legitimately ship a 1x1 colour texture.
+                if (isMissingSpriteName(tile.contents() == null ? null
+                        : tile.contents().name().getPath())) {
                     return new float[] {u, v};
                 }
                 if (DIAGNOSTICS && SPRITE_TILE_LOGGED < 14) {
@@ -8430,12 +11711,15 @@ public final class BlueprintBake {
                             // looked-up sprite be STRICTLY larger, which rejects an equally sized
                             // real tile - the case the user's log shows, where the lookup answered
                             // span=(0.00195,0.00195) and the current sprite was the same real
-                            // 16x16 tile on an 8192 atlas. A one-texel placeholder is what has to
-                            // be detected, so that is what is measured.
+                            // 16x16 tile on an 8192 atlas. A placeholder is what has to be
+                            // detected, and on an 8192 atlas span alone cannot do it - a real 16x16
+                            // tile and a one-texel answer both measure 1/512 - so the floor is
+                            // 1/1024 and the answer's own contents are checked too.
                             boolean currentIsPlaceholder = spanU < PLACEHOLDER_SPAN
                                 || spanV < PLACEHOLDER_SPAN;
                             boolean lookupIsReal = realSpanU >= PLACEHOLDER_SPAN
-                                && realSpanV >= PLACEHOLDER_SPAN;
+                                && realSpanV >= PLACEHOLDER_SPAN
+                                && !isPlaceholderSprite(real);
                             if (lookupIsReal && (currentIsPlaceholder
                                     || realSpanU * realSpanV > spanU * spanV)) {
                                 currentSprite = real;
@@ -8533,7 +11817,94 @@ public final class BlueprintBake {
             return this;
         }
 
+        /** Capture the transform the open face will be placed with, if it is not captured yet. */
+        private void snapshotFrame() {
+            if (this.quadFrame != null) {
+                return;
+            }
+            this.quadFrame = new org.joml.Matrix4f(this.vertexFrame);
+            this.quadFrameOffsetX = this.offsetX;
+            this.quadFrameOffsetY = this.offsetY;
+            this.quadFrameOffsetZ = this.offsetZ;
+            this.quadFrameSerial = ++this.frameSerialCounter;
+        }
+
+        /** Forget the captured transform: the face it belonged to has been written. */
+        private void dropSnapshot() {
+            this.quadFrame = null;
+            this.quadFrameOffsetX = 0f;
+            this.quadFrameOffsetY = 0f;
+            this.quadFrameOffsetZ = 0f;
+            this.quadFrameSerial = 0;
+        }
+
+        /**
+         * Close a face that is only part written, before the transform beneath it changes.
+         *
+         * <p>A corner list of fewer than four is either a triangle - which is written as one - or
+         * the unfinished start of a face that something interrupted. Either way it belongs to the
+         * transform that was in force while it was written, and once the transform moves on it can
+         * never be finished correctly: the next corner would arrive already placed in the next
+         * piece's space. Measured on {@code region_20261031_111610}, such a corner is exactly one
+         * block from its three companions, which is the block offset of the next block entity.
+         * So the list is closed here instead. No-op when no face is open, which is the case for a
+         * renderer that writes whole quads - the track belt and the cannon barrel - so their
+         * output cannot move.</p>
+         */
+        private void closePartialFace() {
+            if (this.rawQuad.isEmpty() || this.rawQuad.size() >= 4) {
+                return;
+            }
+            try {
+                flush();
+            } catch (Throwable t) {
+                // Closing a face at a transform boundary must never take an export down: the face
+                // would have been written anyway, and the pass that follows is unaffected. The
+                // error is still reported, capped so a broken renderer cannot flood the log.
+                this.rawQuad.clear();
+                dropSnapshot();
+                if (PARTIAL_CLOSE_FAILED < 5) {
+                    PARTIAL_CLOSE_FAILED++;
+                    BlueprintExporter.LOGGER.warn(
+                        "wheel-geom: closing a half-written face failed: {}", t.toString());
+                }
+            }
+        }
+
         private void flush() {
+            // The face is placed here, with the transform captured at its first corner.
+            //
+            // This is the whole of the "the wheel is twisted" fix: the four corners are one face
+            // and must share one transform. When the captured transform is the current one - the
+            // only case a stream that writes whole quads ever produces - `place` runs the same
+            // arithmetic on the same values, so the numbers are bit for bit what they were.
+            if (!this.rawQuad.isEmpty()) {
+                int base = this.quad.size();
+                if (this.quadFrame == null) {
+                    // No capture: fall back to the current state, which is the old behaviour.
+                    for (float[] p : this.rawQuad) {
+                        org.joml.Vector3f q = place(p[0], p[1], p[2], 0);
+                        quad.add(new float[] {q.x, q.y, q.z});
+                    }
+                } else {
+                    for (float[] p : this.rawQuad) {
+                        org.joml.Vector3f q = place(p[0], p[1], p[2], 0, this.quadFrame,
+                                                    this.quadFrameOffsetX, this.quadFrameOffsetY,
+                                                    this.quadFrameOffsetZ);
+                        quad.add(new float[] {q.x, q.y, q.z});
+                    }
+                }
+                // ...and what it became afterwards, so the two can be compared.
+                for (int i = base; i < this.quad.size(); i++) {
+                    float[] p = this.quad.get(i);
+                    notePlaced(p[0], p[1], p[2]);
+                }
+                this.rawQuad.clear();
+            }
+            // A track renderer's quad whose coordinates were inside 0..1 could be the belt or one
+            // of the wheels it draws beside it; only the finished window can tell. See
+            // resolveDeferredBelt.
+            resolveDeferredBelt();
             // Block-entity geometry samples the atlas in pixel space; a model's faces use 0..1.
             // Normalising here, once per quad, covers every route a block entity can take to
             // reach this consumer - the three-argument addVertex, setUv, and putBulkData.
@@ -8543,6 +11914,18 @@ public final class BlueprintBake {
             // the route a CBC cannon barrel takes: its contraption renderer draws baked models
             // through the entity pass, which has no sprite to name the texture from.
             resolveAtlasPinTile();
+            // The material this face will be filed under, decided once and reused.
+            //
+            // It is needed above the filters, not only in `addFace` where it used to be asked
+            // for, because the `wheel-faces:` verdict line has to name the material of the faces
+            // that are about to be thrown away - a drop under no name is exactly the silent loss
+            // that line exists to end. `addFace` now takes this object, so the name the ledger
+            // counts under and the name the .obj writes can never disagree.
+            Pinned pinned = effectiveMaterial();
+            // One more face the model or the renderer asked for. `model` on the `wheel-faces:`
+            // line is this count: every corner list that reached `flush` as a face, before any of
+            // the filters below can throw it away.
+            noteQuadSeen(pinned.material());
             // Only well-formed faces are kept.
             //
             // A vertex list that does not hold `count` of each is malformed - something
@@ -8554,10 +11937,34 @@ public final class BlueprintBake {
                 quad.clear();
                 uvQuad.clear();
                 nQuad.clear();
+                this.rawQuad.clear();
+                dropSnapshot();
                 this.quadTile = null;
                 this.quadTileMixed = false;
+                noteQuadDropped(pinned.material());
                 return;
             }
+            // A three-corner face arrives here with its last corner written twice, and that is a
+            // triangle, not a strip.
+            //
+            // NeoForge's OBJ loader bakes every `f` as a four-vertex quad by repeating the last
+            // index once the face runs out of corners (`ObjModel.makeQuad` reads
+            // `indices[Math.min(i, indices.length - 1)]`), so on this side the two are
+            // indistinguishable until the corners are compared. They were compared - the
+            // distinctness test below - and the repeat was read as a degenerate strip, so the face
+            // was thrown away. Measured on `region_20261031_170701`: the offroad tyre is
+            // `offroad:models/item/small_tire/block.obj`, 70 faces per wheel - 54 quads and 16
+            // triangles - and the exported wheel had 54. The sixteen that were gone are exactly the
+            // model's triangles and exactly its `spokes` object, which is the disc between the hub
+            // and the rim: the wheel arrived as a hollow ring with nothing filling it.
+            //
+            // Collapsed here, before the tests, so the face is judged afterwards as the triangle it
+            // actually is. Nothing is loosened: three distinct corners and real area are still
+            // required, so a genuine strip - collinear corners, or a repeat that leaves no area,
+            // which is what the Copycats+ panels emitted - is still thrown away by the same two
+            // tests, and a face that survives this always has strictly fewer than four corners than
+            // it arrived with.
+            collapseRepeatedCorner();
             // A face whose corners are not distinct is a degenerate strip, not geometry.
             boolean distinct = true;
             for (int i = 0; i < quad.size() && distinct; i++) {
@@ -8580,13 +11987,20 @@ public final class BlueprintBake {
             double area = faceArea(quad);
             boolean keep = distinct && area > 1e-4;
             if (keep && quad.size() == 4) {
-                addFace(4);
+                addFace(4, pinned);
             } else if (keep && quad.size() == 3) {
-                addFace(3);
+                addFace(3, pinned);
+            } else {
+                noteQuadDropped(pinned.material());
             }
             quad.clear();
             uvQuad.clear();
             nQuad.clear();
+            this.rawQuad.clear();
+            // The face is written, so the transform it was placed with is no longer needed. The
+            // next face captures its own, which is what makes `frames-seen` on the diagnostic line
+            // mean "this material's faces used this many different transforms".
+            dropSnapshot();
             // The next quad decides its own tile from its own first vertex.
             this.quadTile = null;
             this.quadTileMixed = false;
@@ -8617,14 +12031,100 @@ public final class BlueprintBake {
             return total;
         }
 
-        private void addFace(int count) {
+        /**
+         * Collapse a corner that sits on the one before it, turning a padded triangle back into a
+         * triangle.
+         *
+         * <p>The repeat is what a three-corner source becomes on this side: a quad is the only
+         * thing every route writes, so a `f a b c` face is baked with `c` twice - adjacent, at the
+         * end of the list, or across the seam when the source started on `a`. Either way the four
+         * corners hold three distinct points, and the distinctness test in {@code flush} reads the
+         * repeat as a degenerate strip and drops the face. That is the whole of "the exported wheel
+         * has no disc": the offroad tyre model's sixteen triangles are its `spokes` object, the only
+         * thing between the hub and the rim, and they were the only faces it lost.</p>
+         *
+         * <p>Removed here rather than by loosening that test, because the two cases it must keep
+         * apart are decided by geometry, not by count: a repeat whose three remaining corners
+         * enclose area is a triangle, and a repeat whose corners are collinear is a strip. Only the
+         * first is collapsed, and it is then still measured by the same area test as every other
+         * face.</p>
+         *
+         * @return how many corners were removed, so the caller could report it
+         */
+        private int collapseRepeatedCorner() {
+            if (this.quad.size() < 4) {
+                return 0;
+            }
+            int removed = 0;
+            for (int i = this.quad.size() - 1; i >= 1; i--) {
+                if (samePoint(this.quad.get(i), this.quad.get(i - 1))) {
+                    this.quad.remove(i);
+                    this.uvQuad.remove(i);
+                    this.nQuad.remove(i);
+                    removed++;
+                }
+            }
+            // The repeat can also be the last corner against the first, which is where a source
+            // that opened with the padded index ends up.
+            if (this.quad.size() == 4 && samePoint(this.quad.get(3), this.quad.get(0))) {
+                this.quad.remove(3);
+                this.uvQuad.remove(3);
+                this.nQuad.remove(3);
+                removed++;
+            }
+            return removed;
+        }
+
+        /** Whether two corners are the same point, at the same tolerance the area test uses. */
+        private static boolean samePoint(float[] a, float[] b) {
+            return Math.abs(a[0] - b[0]) < 1e-4f
+                && Math.abs(a[1] - b[1]) < 1e-4f
+                && Math.abs(a[2] - b[2]) < 1e-4f;
+        }
+
+        // ------------------------------------------------------------ face ledger
+        //
+        // Per material: {faces asked for, faces written, faces dropped}. Asked for is counted in
+        // `flush`, where every face arrives; written in `addFace`, where one survives; dropped at
+        // the two places a face can be thrown away. The pair is the only statement of "what the
+        // model has against what the file got", and it is what the `wheel-faces:` line prints.
+
+        private final java.util.Map<String, int[]> quadLedger = new java.util.LinkedHashMap<>();
+
+        private int[] ledgerFor(String material) {
+            return this.quadLedger.computeIfAbsent(material == null ? "-" : material,
+                                                   ignored -> new int[3]);
+        }
+
+        private void noteQuadSeen(String material) {
+            ledgerFor(material)[0]++;
+        }
+
+        private void noteQuadWritten(String material) {
+            ledgerFor(material)[1]++;
+        }
+
+        private void noteQuadDropped(String material) {
+            ledgerFor(material)[2]++;
+        }
+
+        /**
+         * {@code {asked for, written, dropped}} for one material, or null when none was seen.
+         *
+         * @param material the material key, as the faces carry it
+         */
+        int[] quadLedger(String material) {
+            return material == null ? null : this.quadLedger.get(material);
+        }
+
+        private void addFace(int count, Pinned pinned) {
             // One note per quad, not per emitted face: a double-sided material writes two faces
             // for the same quad, and the owner is a property of the quad.
             CaptureScope.noteQuad();
-            // Decided once for the quad, so the name, the image, the layer and the reverse copy
-            // cannot disagree: `effectiveMaterial` may replace all three when the renderer's own
-            // coordinates identified a different texture from the one the pin guessed.
-            Pinned pinned = effectiveMaterial();
+            // Decided once for the quad - in `flush`, before the filters - so the name, the image,
+            // the layer and the reverse copy cannot disagree, and so the ledger counts a face that
+            // is about to be dropped under the same name it would have been written with.
+            noteQuadWritten(pinned.material());
             // Named here, once per quad, because this is the one point where both halves of the
             // answer are known: the pin the render type guessed and whether the coordinates
             // identified anything better. A block-entity face that keeps the pin is the fallback
@@ -8654,8 +12154,26 @@ public final class BlueprintBake {
             // that these faces should be grouped by texture rather than by sub-level.
             Face face = new Face(count, pinned.material(), pinned.texture(), currentSubLevel,
                                  materialPinned ? currentSubLevel : -1, pinned.layer());
+            // Name the block on the material line, even when the faces carry no image.
+            //
+            // Every face passes through here, and a pin already holds the block the renderer was
+            // drawing, so this is where an untextured material can say where it came from. It
+            // could not before: the `material: block=...` line printed `block=[]` - an empty set -
+            // for exactly the materials whose `tex=-` made the block worth knowing, which is what
+            // the twelve untextured materials of the two most recent exports reported.
+            if (this.pinnedBlockLabel != null && !this.pinnedBlockLabel.isEmpty()) {
+                MATERIAL_BLOCKS
+                    .computeIfAbsent(face.material, ignored -> new java.util.LinkedHashSet<>())
+                    .add(this.pinnedBlockLabel);
+            }
             face.uvSpace = uvSpaceOfQuad();
+            // Which transform the face was placed with, so the `wheel-geom:` line can count how
+            // many distinct ones a material's faces actually used.
+            face.frameSerial = this.quadFrameSerial;
             this.lastFaceTexture = pinned.texture();
+            // Which route named this face's image, kept per material for the evidence line. The
+            // model path names a face from its own quad's sprite, so it is never a guess.
+            noteSpriteSrc(face.material, this.materialPinned ? pinned.src() : "model");
             for (int i = 0; i < count; i++) {
                 int src = reversed ? count - 1 - i : i;
                 float[] p = quad.get(src);

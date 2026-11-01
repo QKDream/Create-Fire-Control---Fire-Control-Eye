@@ -67,8 +67,16 @@ public final class CaptureExport {
     /** Largest number of frames a recording may stay open for, so a missed close cannot leak. */
     private static final int MAX_TICKS = 40;
 
-    /** The .mtl path of the stitched block atlas, relative to the export folder. */
-    private static final String ATLAS_MTL_PATH = "textures/blocks_atlas.png";
+    /**
+     * The .mtl path of the stitched block atlas, relative to the export folder.
+     *
+     * <p>Suffixed {@code _capture} so a frame capture can never write the image a block or region
+     * export points its atlas materials at. The two are different pictures - the capture's is read
+     * back off the GPU at the moment the frame was drawn, a block export's would be the atlas the
+     * block models were baked against - and sharing one file name meant whichever ran last decided
+     * what the other one's materials showed.
+     */
+    private static final String ATLAS_MTL_PATH = "textures/blocks_atlas_capture.png";
 
     /** A {@code namespace:path.png} as it appears in a render type or in a ResourceLocation. */
     private static final Pattern LOCATION_PATTERN =
@@ -586,7 +594,10 @@ public final class CaptureExport {
      * @return whether the block atlas was written
      */
     private static boolean write() throws Exception {
-        Path outDir = BlueprintBake.outputDir();
+        // The capture lands in the same per-export folder as everything else. It used to share the
+        // flat root with the block/region exports, which put two different `blocks_atlas.png` and
+        // two different `textures/**` trees on top of each other.
+        Path outDir = BlueprintBake.exportDir(name);
         Files.createDirectories(outDir);
         String base = name + "_capture";
         Path obj = outDir.resolve(base + ".obj");
@@ -820,8 +831,17 @@ public final class CaptureExport {
      * That is the fast path; modded render types that build their own subclass are searched through
      * field by field, and only if all of that fails is the {@code toString()} text parsed.</p>
      *
+     * <p>Public entry point, for the region export's entity pass: it lives in the
+     * {@code blueprint} package and needs the one reader that also walks a modded render type's own
+     * fields and parses its description. The plain {@code state().textureState} path misses those,
+     * and a Create contraption's render types are exactly the modded case.</p>
+     *
      * @return the bound texture, or {@code null} when nothing could be found
      */
+    public static ResourceLocation textureOf(RenderType type) {
+        return locationOf(type);
+    }
+
     private static ResourceLocation locationOf(RenderType type) {
         if (type == null) {
             return null;
@@ -1035,13 +1055,31 @@ public final class CaptureExport {
      * .mtl already points at. Reuse keeps the per-block product byte for byte the same while the
      * capture still gets a real image for its own material.</p>
      *
+     * <p>Public because the region export's entity pass uses it: an entity renderer's own texture
+     * is a plain pack PNG and must reach the export folder un-re-encoded, which is exactly what
+     * this does. The entity pass pins the material, so the path returned here is what its
+     * {@code map_Kd} points at.</p>
+     *
      * @return the path written, relative to the export folder, or {@code null} when it failed
      */
-    private static String saveTexture(Path outDir, ResourceLocation location) {
+    public static String saveTexture(Path outDir, ResourceLocation location) {
         String key = location.toString();
         String cached = TEX_FILES.get(key);
         if (cached != null) {
-            return cached.isEmpty() ? null : cached;
+            if (cached.isEmpty()) {
+                return null;
+            }
+            // A hit is only a hit while the file is in THIS export folder. Each export writes into
+            // its own folder, so returning the first folder's path for a second export would leave
+            // that export's .mtl pointing at a file which is not there - the `tex-missing` case.
+            try {
+                Path present = outDir.resolve(cached);
+                if (Files.isRegularFile(present) && Files.size(present) > 0L) {
+                    return cached;
+                }
+            } catch (Throwable ignored) {
+                // an unreadable cache entry is rebuilt below
+            }
         }
         String relative = textureRelativePath(location);
         Path target = outDir.resolve(relative);

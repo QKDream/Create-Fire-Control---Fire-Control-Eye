@@ -77,9 +77,15 @@ public final class RegionExport {
             // echoed into chat below.
             BlueprintExporter.NOTES.clear();
             int faces = BlueprintBake.bakeRegion(name, selection.aabb(), selection.source());
-            String obj = BlueprintBake.outputDir().resolve(name + ".obj").toString();
+            // Each export owns a folder, so this is the path the player should open - not the
+            // shared root, which also holds whatever earlier versions left there.
+            java.nio.file.Path dir = BlueprintBake.exportDir(name);
+            String stem = BlueprintBake.exportFolderName(name);
+            String obj = dir.resolve(stem + ".obj").toString();
+            String where = dir.toAbsolutePath().toString();
             source.sendSuccess(() -> Component.literal(
                 "sableexport region: " + obj + " (" + faces + " faces)"), false);
+            source.sendSuccess(() -> Component.literal("  export dir: " + where), false);
             java.util.List<String> notes = new java.util.ArrayList<>(BlueprintExporter.NOTES);
             for (int i = 0; i < Math.min(notes.size(), 4); i++) {
                 String note = notes.get(i);

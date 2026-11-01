@@ -281,8 +281,17 @@ public final class BlueprintExportPage {
             try {
                 int tris = exportOne(entry);
                 ok++;
+                // The full path, because each export now has a folder of its own and the name
+                // alone no longer says where the .obj is.
+                String where;
+                try {
+                    where = BlueprintBake.exportDir(entry.name())
+                        .resolve(BlueprintBake.exportFolderName(entry.name()) + ".obj").toString();
+                } catch (java.io.IOException io) {
+                    where = entry.name() + ".obj";
+                }
                 message(player, ChatFormatting.GREEN,
-                        entry.name() + " -> " + entry.name() + ".obj (" + tris + " triangles)");
+                        entry.name() + " -> " + where + " (" + tris + " triangles)");
             } catch (Throwable t) {
                 BlueprintExporter.LOGGER.error("export failed for {}", entry.name(), t);
                 message(player, ChatFormatting.RED,
@@ -290,7 +299,8 @@ public final class BlueprintExportPage {
             }
         }
         message(player, ChatFormatting.AQUA,
-                "exported " + ok + "/" + entries.size() + " to " + BlueprintBake.outputDirSafe());
+                "exported " + ok + "/" + entries.size() + " to " + BlueprintBake.outputDirSafe()
+                    + " (one folder per model)");
     }
 
     private static int exportOne(BlueprintToolLocalFiles.Entry entry) throws Exception {
